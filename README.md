@@ -1,12 +1,16 @@
-1) Estrai lo zip.
-2) Apri la cartella `pirelli_weekly_audit_mvp_v3_fixed`.
-3) Carica e sovrascrivi su GitHub SOLO:
+1. Estrai questo zip.
+2. Nel repo GitHub carica e sovrascrivi:
    - main.py
    - requirements.txt
    - README.md
-   - audit_engine/
-   - config/
-4) Fai commit.
-5) Apri `.github/workflows/weekly_audit.yml` sul repo. Se vuoi, sostituisci il contenuto con quello presente nel file `WEEKLY_WORKFLOW_TO_PASTE.txt`.
-6) Vai su Actions > Pirelli Weekly Audit > Run workflow.
-7) Nel nuovo Excel verifica che esistano il foglio `Build Info` e `Summary!A1 = Pirelli Weekly Audit V3_FIXED_20260331`.
+   - cartella audit_engine
+   - cartella config
+   - WEEKLY_WORKFLOW_TO_PASTE.txt
+   - COME_AGGIORNARE_GITHUB.txt
+3. Apri .github/workflows/weekly_audit.yml
+4. Cancella tutto e incolla il contenuto di WEEKLY_WORKFLOW_TO_PASTE.txt
+5. Commit changes
+6. Vai su Actions > Pirelli Weekly Audit > Run workflow
+7. Nel nuovo Excel controlla:
+   - fogli 00_Sintesi, 01_Priorita, 10_Bug_Tutti, 11_Bug_Codice_Tecnica, 12_Bug_SEO, 13_Bug_UX_UI, 14_Bug_Contenuti_Localizzazione, 15_Bug_Accessibilita, 16_Bug_CRO
+   - Build Info con build_version V4_20260331
