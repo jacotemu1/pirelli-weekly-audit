@@ -13,9 +13,9 @@ from audit_engine.storage import Storage
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Pirelli weekly audit MVP')
+    parser = argparse.ArgumentParser(description='Pirelli weekly audit MVP V3')
     parser.add_argument('--config', default='config/sites.yaml')
-    parser.add_argument('--db', default='outputs/audit_history.db')
+    parser.add_argument('--db', default='outputs/audit_history_v3.db')
     parser.add_argument('--output-dir', default='outputs')
     return parser.parse_args()
 
@@ -48,6 +48,8 @@ def main() -> int:
         storage.finish_run(run_id, finished_at=finished.isoformat(), status='completed', notes=f'Excel: {excel_path.name}; Summary: {md_path.name}')
 
         print(f'Run completed: {run_id}')
+        print(f'Pages checked: {len(pages)}')
+        print(f'Findings: {len(findings)}')
         print(f'Excel: {excel_path}')
         print(f'Summary: {md_path}')
         return 0

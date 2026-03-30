@@ -1,113 +1,154 @@
 from __future__ import annotations
 
-import re
-from datetime import date
-from urllib.parse import urlparse
+import sqlite3
+from pathlib import Path
+from typing import Iterable
 
-from .fingerprints import make_fingerprint
 from .models import Finding, PageResult
 
-CURRENT_YEAR = date.today().year
-NON_ENGLISH = {'it', 'de', 'fr', 'es', 'pt', 'zh', 'ja', 'tr', 'nl'}
-FOREIGN_LANGUAGE_MARKERS = {
-    'es': ['pesquisar', 'onde', 'veiculo', 'where are you?', 'servizi disponibili'],
-    'pt': ['where are you?', 'vehículo'],
-    'it': ['where are you?'],
-    'de': ['where are you?'],
-    'fr': ['where are you?'],
-    'ja': ['where are you?', 'discover more'],
-    'tr': ['where are you?', 'all terrain'],
-    'nl': ['where are you?', 'servizi disponibili'],
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_date TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    status TEXT NOT NULL,
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    site_code TEXT NOT NULL,
+    country TEXT NOT NULL,
+    region TEXT NOT NULL,
+    language TEXT NOT NULL,
+    url TEXT NOT NULL,
+    page_type TEXT NOT NULL,
+    final_url TEXT,
+    status_code INTEGER,
+    title TEXT,
+    h1 TEXT,
+    h2_count INTEGER,
+    canonical TEXT,
+    meta_description TEXT,
+    crawl_depth INTEGER DEFAULT 0,
+    discovered_from TEXT,
+    errors TEXT,
+    FOREIGN KEY(run_id) REFERENCES runs(id)
+);
+
+CREATE TABLE IF NOT EXISTS findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    site_code TEXT NOT NULL,
+    country TEXT NOT NULL,
+    region TEXT NOT NULL,
+    url TEXT NOT NULL,
+    page_type TEXT NOT NULL,
+    category TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    title TEXT NOT NULL,
+    explanation_it TEXT NOT NULL,
+    impact_it TEXT NOT NULL,
+    suggested_fix_it TEXT NOT NULL,
+    evidence_tecnica TEXT NOT NULL,
+    confidence TEXT NOT NULL,
+    crawl_depth INTEGER DEFAULT 0,
+    discovered_from TEXT,
+    fingerprint TEXT NOT NULL,
+    UNIQUE(run_id, fingerprint),
+    FOREIGN KEY(run_id) REFERENCES runs(id)
+);
+"""
+
+PAGE_COLUMNS = {
+    'crawl_depth': 'ALTER TABLE pages ADD COLUMN crawl_depth INTEGER DEFAULT 0',
+    'discovered_from': 'ALTER TABLE pages ADD COLUMN discovered_from TEXT',
+}
+FINDING_COLUMNS = {
+    'explanation_it': 'ALTER TABLE findings ADD COLUMN explanation_it TEXT DEFAULT ""',
+    'impact_it': 'ALTER TABLE findings ADD COLUMN impact_it TEXT DEFAULT ""',
+    'suggested_fix_it': 'ALTER TABLE findings ADD COLUMN suggested_fix_it TEXT DEFAULT ""',
+    'evidence_tecnica': 'ALTER TABLE findings ADD COLUMN evidence_tecnica TEXT DEFAULT ""',
+    'confidence': 'ALTER TABLE findings ADD COLUMN confidence TEXT DEFAULT "Media"',
+    'crawl_depth': 'ALTER TABLE findings ADD COLUMN crawl_depth INTEGER DEFAULT 0',
+    'discovered_from': 'ALTER TABLE findings ADD COLUMN discovered_from TEXT',
 }
 
-PRIORITY_IT = {'Critica': 'Urgente', 'Alta': 'Alta', 'Media': 'Media', 'Bassa': 'Bassa'}
 
+class Storage:
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = str(db_path)
+        self.conn = sqlite3.connect(self.db_path)
+        self.conn.execute('PRAGMA foreign_keys = ON')
+        self.conn.executescript(SCHEMA)
+        self._migrate_if_needed()
+        self.conn.commit()
 
-def _compose_explanation_it(title: str, description: str, impact: str) -> str:
-    return f"{title}: {description} Impatto: {impact}"
+    def _column_names(self, table: str) -> set[str]:
+        cur = self.conn.execute(f'PRAGMA table_info({table})')
+        return {row[1] for row in cur.fetchall()}
 
+    def _migrate_if_needed(self) -> None:
+        page_cols = self._column_names('pages')
+        for col, ddl in PAGE_COLUMNS.items():
+            if col not in page_cols:
+                self.conn.execute(ddl)
+        finding_cols = self._column_names('findings')
+        for col, ddl in FINDING_COLUMNS.items():
+            if col not in finding_cols:
+                self.conn.execute(ddl)
 
-def _finding(page: PageResult, category: str, severity: str, title: str, description: str, impact: str, suggested_fix: str) -> Finding:
-    return Finding(
-        site_code=page.site_code,
-        country=page.country,
-        region=page.region,
-        url=page.final_url or page.url,
-        page_type=page.page_type,
-        category=category,
-        severity=severity,
-        title=title,
-        description=description,
-        impact=impact,
-        suggested_fix=suggested_fix,
-        explanation_it=_compose_explanation_it(title, description, impact),
-        priority_it=PRIORITY_IT.get(severity, severity),
-        fingerprint=make_fingerprint(page.site_code, page.final_url or page.url, title, description),
-    )
+    def create_run(self, run_date: str, started_at: str) -> int:
+        cur = self.conn.cursor()
+        cur.execute('INSERT INTO runs(run_date, started_at, status) VALUES (?, ?, ?)', (run_date, started_at, 'running'))
+        self.conn.commit()
+        return int(cur.lastrowid)
 
+    def finish_run(self, run_id: int, finished_at: str, status: str = 'completed', notes: str = '') -> None:
+        self.conn.execute('UPDATE runs SET finished_at = ?, status = ?, notes = ? WHERE id = ?', (finished_at, status, notes, run_id))
+        self.conn.commit()
 
-def run_rules(pages: list[PageResult]) -> list[Finding]:
-    findings: list[Finding] = []
-    title_index: dict[tuple[str, str], int] = {}
-    h1_index: dict[tuple[str, str], int] = {}
+    def save_pages(self, run_id: int, pages: Iterable[PageResult]) -> None:
+        self.conn.executemany(
+            '''INSERT INTO pages(run_id, site_code, country, region, language, url, page_type, final_url, status_code, title, h1, h2_count, canonical, meta_description, crawl_depth, discovered_from, errors)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            [(
+                run_id, p.site_code, p.country, p.region, p.language, p.url, p.page_type, p.final_url, p.status_code,
+                p.title, p.h1, p.h2_count, p.canonical, p.meta_description, p.crawl_depth, p.discovered_from, ' | '.join(p.errors)
+            ) for p in pages]
+        )
+        self.conn.commit()
 
-    for page in pages:
-        if page.status_code is None or page.status_code >= 400:
-            findings.append(_finding(page, 'technical', 'Alta', 'Pagina non accessibile o errore HTTP', f'Status code: {page.status_code}; errors: {page.errors}', 'La pagina non è disponibile o non è analizzabile correttamente.', 'Verificare availability, redirect e blocchi bot/firewall.'))
+    def save_findings(self, run_id: int, findings: Iterable[Finding]) -> None:
+        self.conn.executemany(
+            '''INSERT OR IGNORE INTO findings(run_id, site_code, country, region, url, page_type, category, severity, title, explanation_it, impact_it, suggested_fix_it, evidence_tecnica, confidence, crawl_depth, discovered_from, fingerprint)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            [(
+                run_id, f.site_code, f.country, f.region, f.url, f.page_type, f.category, f.severity,
+                f.title, f.explanation_it, f.impact_it, f.suggested_fix_it, f.evidence_tecnica, f.confidence, f.crawl_depth, f.discovered_from, f.fingerprint
+            ) for f in findings]
+        )
+        self.conn.commit()
 
-        if not page.title:
-            findings.append(_finding(page, 'seo', 'Media', 'Title mancante', 'La pagina non espone un <title> leggibile.', 'Peggiora SEO e chiarezza del contenuto.', 'Aggiungere un title univoco e localizzato.'))
-        else:
-            title_key = (page.site_code, page.title.strip().lower())
-            title_index[title_key] = title_index.get(title_key, 0) + 1
+    def previous_run_id(self, current_run_id: int) -> int | None:
+        cur = self.conn.cursor()
+        cur.execute('SELECT id FROM runs WHERE id < ? AND status = ? ORDER BY id DESC LIMIT 1', (current_run_id, 'completed'))
+        row = cur.fetchone()
+        return int(row[0]) if row else None
 
-        if not page.h1:
-            findings.append(_finding(page, 'seo', 'Media', 'H1 mancante', 'La pagina non espone un H1 leggibile.', 'Riduce chiarezza semantica e orientamento utente.', 'Aggiungere un H1 univoco e coerente con il topic della pagina.'))
-        else:
-            h1_key = (page.site_code, page.h1.strip().lower())
-            h1_index[h1_key] = h1_index.get(h1_key, 0) + 1
-
-        if re.search(r'\bundefined\b', page.text, re.IGNORECASE) or 'undefined' in page.final_url.lower():
-            findings.append(_finding(page, 'technical', 'Alta', 'Placeholder tecnico visibile', 'La pagina mostra il token "undefined" nel testo o nell’URL.', 'Riduce fiducia e segnala un problema di rendering o data binding.', 'Correggere il template e aggiungere test automatici anti-placeholder.'))
-
-        if page.language in NON_ENGLISH and re.search(r'where are you\?', page.text, re.IGNORECASE):
-            findings.append(_finding(page, 'content', 'Media', 'Placeholder dealer non localizzato', 'È presente la stringa "Where are you?" su un ramo non inglese.', 'Incoerenza locale e possibile attrito nel dealer flow.', 'Localizzare il componente dealer e i suoi messaggi di input/errore.'))
-
-        if re.search(r'<h[1-6][^>]*>\s*</h[1-6]>', page.html, re.IGNORECASE):
-            findings.append(_finding(page, 'seo', 'Media', 'Heading vuoto nel markup', 'Nel markup è presente almeno un heading senza testo.', 'Semantica debole per SEO e accessibilità.', 'Pulire il template e rimuovere heading placeholder o vuoti.'))
-
-        if page.canonical and page.final_url and urlparse(page.canonical).path != urlparse(page.final_url).path:
-            findings.append(_finding(page, 'seo', 'Bassa', 'Canonical diverso dal final URL', f'Canonical: {page.canonical} / Final URL: {page.final_url}', 'Potrebbe essere corretto, ma va verificato per evitare segnali SEO incoerenti.', 'Controllare canonical, redirect e logica locale del ramo.'))
-
-        old_years = re.findall(r'\b(20\d{2})\b', page.text)
-        stale_years = sorted({int(y) for y in old_years if int(y) < CURRENT_YEAR})
-        if stale_years and page.page_type == 'home':
-            findings.append(_finding(page, 'content', 'Media', 'Anno passato visibile in homepage', f'In homepage compaiono anni passati: {", ".join(map(str, stale_years))}.', 'Possibile contenuto promo/evento non aggiornato.', 'Verificare se i riferimenti sono editoriali evergreen o contenuti scaduti da rimuovere.'))
-
-        markers = FOREIGN_LANGUAGE_MARKERS.get(page.language, [])
-        for marker in markers:
-            if marker.lower() in page.text.lower():
-                findings.append(_finding(page, 'content', 'Media', 'Possibile leakage di altra lingua', f'Rilevata stringa sospetta per il mercato: "{marker}".', 'Riduce coerenza linguistica e qualità percepita.', 'Revisionare le stringhe shared del template e i contenuti localizzati.'))
-                break
-
-        broken_pattern = [link for link in page.links if 'undefined' in link.lower()]
-        if broken_pattern:
-            findings.append(_finding(page, 'technical', 'Critica', 'URL malformato nei link interni', f'Trovati link con "undefined": {broken_pattern[:3]}', 'Rottura diretta del funnel o errore di generazione URL.', 'Correggere la generazione dei link e introdurre un link checker automatico.'))
-
-        if page.errors:
-            findings.append(_finding(page, 'technical', 'Bassa', 'Errori durante il crawling', '; '.join(page.errors), 'Possibile pagina fragile o difficile da renderizzare.', 'Verificare eventuali blocchi, timeout o dipendenze JS.'))
-
-    for page in pages:
-        if page.title and title_index.get((page.site_code, page.title.strip().lower()), 0) > 1:
-            findings.append(_finding(page, 'seo', 'Bassa', 'Title duplicato nel market', f'Il title "{page.title}" compare su più pagine dello stesso market.', 'Riduce unicità SEO e chiarezza nelle SERP.', 'Rendere il title univoco per template o pagina.'))
-        if page.h1 and h1_index.get((page.site_code, page.h1.strip().lower()), 0) > 1:
-            findings.append(_finding(page, 'seo', 'Bassa', 'H1 duplicato nel market', f'L’H1 "{page.h1}" compare su più pagine dello stesso market.', 'Riduce chiarezza semantica e differenziazione tra pagine.', 'Diversificare l’H1 in base al contenuto specifico della pagina.'))
-
-    unique: list[Finding] = []
-    seen: set[str] = set()
-    for finding in findings:
-        if finding.fingerprint in seen:
-            continue
-        seen.add(finding.fingerprint)
-        unique.append(finding)
-    return unique
+    def diff_findings(self, current_run_id: int) -> dict[str, set[str]]:
+        prev_run = self.previous_run_id(current_run_id)
+        cur = self.conn.cursor()
+        cur.execute('SELECT fingerprint FROM findings WHERE run_id = ?', (current_run_id,))
+        current = {row[0] for row in cur.fetchall()}
+        if prev_run is None:
+            return {'new': current, 'resolved': set(), 'persistent': set()}
+        cur.execute('SELECT fingerprint FROM findings WHERE run_id = ?', (prev_run,))
+        previous = {row[0] for row in cur.fetchall()}
+        return {
+            'new': current - previous,
+            'resolved': previous - current,
+            'persistent': current & previous,
+        }

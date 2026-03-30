@@ -1,62 +1,26 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+import yaml
+
+from .models import Site, SitePage
 
 
-@dataclass
-class SitePage:
-    type: str
-    url: str
-
-
-@dataclass
-class Site:
-    code: str
-    country: str
-    region: str
-    language: str
-    base_url: str
-    pages: list[SitePage]
-
-
-@dataclass
-class PageResult:
-    site_code: str
-    country: str
-    region: str
-    language: str
-    url: str
-    page_type: str
-    final_url: str
-    status_code: int | None
-    title: str
-    h1: str
-    h2_count: int
-    canonical: str
-    html: str
-    text: str
-    links: list[str]
-    meta_description: str
-    crawl_depth: int = 0
-    discovered_from: str = ''
-    errors: list[str] = field(default_factory=list)
-
-
-@dataclass
-class Finding:
-    site_code: str
-    country: str
-    region: str
-    url: str
-    page_type: str
-    category: str
-    severity: str
-    title: str
-    description: str
-    impact: str
-    suggested_fix: str
-    fingerprint: str
-    explanation_it: str = ''
-    priority_it: str = ''
-    data: dict[str, Any] = field(default_factory=dict)
+def load_sites(config_path: str | Path) -> list[Site]:
+    data = yaml.safe_load(Path(config_path).read_text(encoding='utf-8'))
+    sites: list[Site] = []
+    for item in data['sites']:
+        pages = [SitePage(type=p['type'], url=p['url']) for p in item['pages']]
+        allowed_prefixes = item.get('allowed_prefixes') or [item['base_url']]
+        sites.append(
+            Site(
+                code=item['code'],
+                country=item['country'],
+                region=item['region'],
+                language=item['language'],
+                base_url=item['base_url'],
+                pages=pages,
+                allowed_prefixes=allowed_prefixes,
+            )
+        )
+    return sites

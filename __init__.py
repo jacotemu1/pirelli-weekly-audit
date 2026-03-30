@@ -1,119 +1,192 @@
 from __future__ import annotations
 
-import sqlite3
+from collections import Counter
 from pathlib import Path
-from typing import Iterable
+
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from .models import Finding, PageResult
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_date TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    status TEXT NOT NULL,
-    notes TEXT
-);
-
-CREATE TABLE IF NOT EXISTS pages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL,
-    site_code TEXT NOT NULL,
-    country TEXT NOT NULL,
-    region TEXT NOT NULL,
-    language TEXT NOT NULL,
-    url TEXT NOT NULL,
-    page_type TEXT NOT NULL,
-    final_url TEXT,
-    status_code INTEGER,
-    title TEXT,
-    h1 TEXT,
-    h2_count INTEGER,
-    canonical TEXT,
-    meta_description TEXT,
-    errors TEXT,
-    FOREIGN KEY(run_id) REFERENCES runs(id)
-);
-
-CREATE TABLE IF NOT EXISTS findings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL,
-    site_code TEXT NOT NULL,
-    country TEXT NOT NULL,
-    region TEXT NOT NULL,
-    url TEXT NOT NULL,
-    page_type TEXT NOT NULL,
-    category TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    impact TEXT NOT NULL,
-    suggested_fix TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    UNIQUE(run_id, fingerprint),
-    FOREIGN KEY(run_id) REFERENCES runs(id)
-);
-"""
+SEVERITY_WEIGHT = {'Critica': 10, 'Alta': 5, 'Media': 2, 'Bassa': 1}
 
 
-class Storage:
-    def __init__(self, db_path: str | Path) -> None:
-        self.db_path = str(db_path)
-        self.conn = sqlite3.connect(self.db_path)
-        self.conn.execute('PRAGMA foreign_keys = ON')
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
+def _auto_width(ws) -> None:
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            try:
+                max_len = max(max_len, len(str(cell.value or '')))
+            except Exception:
+                pass
+        ws.column_dimensions[col_letter].width = min(max_len + 2, 42)
 
-    def create_run(self, run_date: str, started_at: str) -> int:
-        cur = self.conn.cursor()
-        cur.execute('INSERT INTO runs(run_date, started_at, status) VALUES (?, ?, ?)', (run_date, started_at, 'running'))
-        self.conn.commit()
-        return int(cur.lastrowid)
 
-    def finish_run(self, run_id: int, finished_at: str, status: str = 'completed', notes: str = '') -> None:
-        self.conn.execute('UPDATE runs SET finished_at = ?, status = ?, notes = ? WHERE id = ?', (finished_at, status, notes, run_id))
-        self.conn.commit()
+def build_excel(output_path: str | Path, pages: list[PageResult], findings: list[Finding], diff: dict[str, set[str]], run_date: str) -> None:
+    wb = Workbook()
+    wb.remove(wb.active)
 
-    def save_pages(self, run_id: int, pages: Iterable[PageResult]) -> None:
-        self.conn.executemany(
-            '''INSERT INTO pages(run_id, site_code, country, region, language, url, page_type, final_url, status_code, title, h1, h2_count, canonical, meta_description, errors)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            [(
-                run_id, p.site_code, p.country, p.region, p.language, p.url, p.page_type, p.final_url, p.status_code,
-                p.title, p.h1, p.h2_count, p.canonical, p.meta_description, ' | '.join(p.errors)
-            ) for p in pages]
-        )
-        self.conn.commit()
-
-    def save_findings(self, run_id: int, findings: Iterable[Finding]) -> None:
-        self.conn.executemany(
-            '''INSERT OR IGNORE INTO findings(run_id, site_code, country, region, url, page_type, category, severity, title, description, impact, suggested_fix, fingerprint)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            [(
-                run_id, f.site_code, f.country, f.region, f.url, f.page_type, f.category, f.severity,
-                f.title, f.description, f.impact, f.suggested_fix, f.fingerprint
-            ) for f in findings]
-        )
-        self.conn.commit()
-
-    def previous_run_id(self, current_run_id: int) -> int | None:
-        cur = self.conn.cursor()
-        cur.execute('SELECT id FROM runs WHERE id < ? AND status = ? ORDER BY id DESC LIMIT 1', (current_run_id, 'completed'))
-        row = cur.fetchone()
-        return int(row[0]) if row else None
-
-    def diff_findings(self, current_run_id: int) -> dict[str, set[str]]:
-        prev_run = self.previous_run_id(current_run_id)
-        cur = self.conn.cursor()
-        cur.execute('SELECT fingerprint FROM findings WHERE run_id = ?', (current_run_id,))
-        current = {row[0] for row in cur.fetchall()}
-        if prev_run is None:
-            return {'new': current, 'resolved': set(), 'persistent': set()}
-        cur.execute('SELECT fingerprint FROM findings WHERE run_id = ?', (prev_run,))
-        previous = {row[0] for row in cur.fetchall()}
-        return {
-            'new': current - previous,
-            'resolved': previous - current,
-            'persistent': current & previous,
+    pages_df = pd.DataFrame([
+        {
+            'site_code': p.site_code,
+            'country': p.country,
+            'region': p.region,
+            'language': p.language,
+            'page_type': p.page_type,
+            'crawl_depth': p.crawl_depth,
+            'discovered_from': p.discovered_from,
+            'url': p.url,
+            'final_url': p.final_url,
+            'status_code': p.status_code,
+            'title': p.title,
+            'h1': p.h1,
+            'h2_count': p.h2_count,
+            'canonical': p.canonical,
+            'meta_description': p.meta_description,
+            'out_links_count': len(p.links),
+            'errors': ' | '.join(p.errors),
         }
+        for p in pages
+    ])
+    findings_df = pd.DataFrame([
+        {
+            'site_code': f.site_code,
+            'country': f.country,
+            'region': f.region,
+            'page_type': f.page_type,
+            'crawl_depth': f.crawl_depth,
+            'pagina_trovata_da': f.discovered_from,
+            'url': f.url,
+            'area': f.category,
+            'severity': f.severity,
+            'confidence': f.confidence,
+            'titolo_bug': f.title,
+            'spiegazione_bug_it': f.explanation_it,
+            'impatto_utenti_business': f.impact_it,
+            'fix_consigliato_it': f.suggested_fix_it,
+            'evidenza_tecnica': f.evidence_tecnica,
+            'fingerprint': f.fingerprint,
+            'diff_status': 'new' if f.fingerprint in diff['new'] else 'persistent' if f.fingerprint in diff['persistent'] else '',
+        }
+        for f in findings
+    ])
+
+    site_pages = Counter(p.site_code for p in pages)
+    by_site_findings = Counter(f.site_code for f in findings)
+    by_site_200 = Counter(p.site_code for p in pages if (p.status_code or 0) < 400)
+    by_site_non200 = Counter(p.site_code for p in pages if p.status_code is None or p.status_code >= 400)
+    max_depth = Counter()
+    site_regions = {}
+    site_countries = {}
+    severity_penalty = Counter()
+    for p in pages:
+        site_regions[p.site_code] = p.region
+        site_countries[p.site_code] = p.country
+        max_depth[p.site_code] = max(max_depth.get(p.site_code, 0), p.crawl_depth)
+    for f in findings:
+        severity_penalty[f.site_code] += SEVERITY_WEIGHT.get(f.severity, 0)
+
+    summary_rows = []
+    for site_code in sorted(site_pages):
+        score = max(0, 100 - severity_penalty[site_code])
+        summary_rows.append({
+            'site_code': site_code,
+            'country': site_countries.get(site_code, ''),
+            'region': site_regions.get(site_code, ''),
+            'pages_checked': site_pages[site_code],
+            'pages_200': by_site_200[site_code],
+            'pages_non_200': by_site_non200[site_code],
+            'max_crawl_depth': max_depth[site_code],
+            'findings_total': by_site_findings[site_code],
+            'quality_score_estimate': score,
+        })
+    summary_df = pd.DataFrame(summary_rows).sort_values(['quality_score_estimate', 'findings_total'], ascending=[False, True]) if summary_rows else pd.DataFrame()
+
+    summary_ws = wb.create_sheet('Summary')
+    summary_ws['A1'] = 'Pirelli Weekly Audit V3'
+    summary_ws['A1'].font = Font(bold=True, size=14)
+    summary_ws['A2'] = 'Run date'
+    summary_ws['B2'] = run_date
+    summary_ws['A3'] = 'Pages checked'
+    summary_ws['B3'] = len(pages)
+    summary_ws['A4'] = 'Findings total'
+    summary_ws['B4'] = len(findings)
+    summary_ws['A5'] = 'New findings vs previous run'
+    summary_ws['B5'] = len(diff['new'])
+    summary_ws['A6'] = 'Resolved findings vs previous run'
+    summary_ws['B6'] = len(diff['resolved'])
+    summary_ws['A7'] = 'Persistent findings vs previous run'
+    summary_ws['B7'] = len(diff['persistent'])
+    summary_ws['A9'] = 'Per-site summary'
+    summary_ws['A9'].font = Font(bold=True)
+    if not summary_df.empty:
+        for row_idx, row in enumerate([summary_df.columns.tolist()] + summary_df.values.tolist(), start=10):
+            for col_idx, value in enumerate(row, start=1):
+                cell = summary_ws.cell(row=row_idx, column=col_idx, value=value)
+                cell.alignment = Alignment(vertical='top', wrap_text=True)
+                if row_idx == 10:
+                    cell.font = Font(bold=True)
+                    cell.fill = PatternFill('solid', fgColor='D9EAD3')
+    _auto_width(summary_ws)
+
+    coverage_rows = []
+    for site_code in sorted(site_pages):
+        sample_urls = [p.final_url or p.url for p in pages if p.site_code == site_code][:5]
+        coverage_rows.append({
+            'site_code': site_code,
+            'country': site_countries.get(site_code, ''),
+            'pages_checked': site_pages[site_code],
+            'max_crawl_depth': max_depth[site_code],
+            'sample_urls': ' | '.join(sample_urls),
+        })
+    coverage_df = pd.DataFrame(coverage_rows)
+
+    for name, df in [('Pages', pages_df), ('Findings', findings_df), ('Coverage', coverage_df)]:
+        ws = wb.create_sheet(name)
+        if df.empty:
+            ws['A1'] = 'No data'
+        else:
+            for row_idx, row in enumerate([df.columns.tolist()] + df.values.tolist(), start=1):
+                for col_idx, value in enumerate(row, start=1):
+                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                    cell.alignment = Alignment(vertical='top', wrap_text=True)
+                    if row_idx == 1:
+                        cell.font = Font(bold=True)
+                        cell.fill = PatternFill('solid', fgColor='D9EAD3')
+        _auto_width(ws)
+
+    diff_ws = wb.create_sheet('Weekly Diff')
+    diff_ws.append(['type', 'count'])
+    diff_ws.append(['new', len(diff['new'])])
+    diff_ws.append(['resolved', len(diff['resolved'])])
+    diff_ws.append(['persistent', len(diff['persistent'])])
+    for cell in diff_ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill('solid', fgColor='D9EAD3')
+    _auto_width(diff_ws)
+
+    wb.save(output_path)
+
+
+def build_markdown_summary(output_path: str | Path, pages: list[PageResult], findings: list[Finding], diff: dict[str, set[str]], run_date: str) -> None:
+    by_site = Counter(f.site_code for f in findings)
+    site_country = {p.site_code: p.country for p in pages}
+    lines = [
+        '# Pirelli Weekly Audit Summary',
+        '',
+        f'- Run date: {run_date}',
+        f'- Pages checked: {len(pages)}',
+        f'- Findings total: {len(findings)}',
+        f'- New findings: {len(diff["new"])}',
+        f'- Resolved findings: {len(diff["resolved"])}',
+        f'- Persistent findings: {len(diff["persistent"])}',
+        '',
+        '## Top mercati per numero di findings',
+        '',
+    ]
+    for site_code, count in by_site.most_common(10):
+        lines.append(f'- {site_country.get(site_code, site_code)} ({site_code}): {count} findings')
+    Path(output_path).write_text('\n'.join(lines), encoding='utf-8')

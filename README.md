@@ -1,29 +1,38 @@
-# Pirelli Weekly Audit MVP V2
+# Pirelli Weekly Audit MVP V3
 
-Questa versione migliora il prototipo iniziale in due punti chiave:
+Questa versione corregge i due limiti principali emersi nelle prime run:
 
-1. **Crawl esteso dal seed homepage**
-   - parte dalle homepage/config pages del mercato
-   - segue automaticamente i link interni dello stesso ramo/locale
-   - salva profondità di crawl e pagina di origine (`discovered_from`)
-   - usa limiti di sicurezza configurati nel codice (`MAX_PAGES_PER_SITE`, `MAX_CRAWL_DEPTH`)
+## 1. Crawl reale dalla homepage
+- parte dalle homepage reali dei mercati
+- segue i link interni realmente presenti nel ramo/locale
+- non inventa più URL dealer o catalogue per deduzione
+- salva `crawl_depth` e `discovered_from` per capire da dove arriva ogni pagina
+- supporta mercati multi-prefix come Switzerland e UAE/GCC tramite `allowed_prefixes`
 
-2. **Excel più leggibile in italiano**
-   - colonna `titolo_bug`
-   - colonna `spiegazione_bug_it`
-   - colonna `impatto_utenti_business`
-   - colonna `fix_consigliato_it`
-   - meno duplicazione tra descrizione, impatto e fix
+## 2. Findings più leggibili per business
+Nel foglio `Findings` trovi colonne orientate all’uso pratico:
+- `titolo_bug`
+- `spiegazione_bug_it`
+- `impatto_utenti_business`
+- `fix_consigliato_it`
+- `evidenza_tecnica`
+- `confidence`
+- `pagina_trovata_da`
+- `crawl_depth`
+
+## 3. Miglioramento del diff settimanale
+Il database storico ora usa `audit_history_v3.db` ed è pensato per essere persistito tra run.
+Per avere un vero `new / resolved / persistent` in GitHub Actions è consigliato aggiornare anche il workflow per conservare `outputs/audit_history_v3.db` tra le esecuzioni.
 
 ## Output
-
-- `Summary` → overview run e score per market
-- `Pages` → tutte le pagine visitate, con `crawl_depth` e `discovered_from`
-- `Findings` → issue spiegate in italiano
+- `Summary` → KPI run + riepilogo per market
+- `Pages` → tutte le pagine visitate con profondità e pagina sorgente
+- `Findings` → issue spiegate in italiano e con contesto tecnico
+- `Coverage` → panoramica di copertura del crawl
 - `Weekly Diff` → new / resolved / persistent
 
-## Limiti attuali
-
-- Il crawler segue **tutte le pagine interne raggiungibili dalla homepage fino ai limiti di sicurezza**, non un crawl infinito dell'intero dominio.
-- Alcuni mercati possono bloccare il fetch automatico o servire contenuti diversi a un browser headless.
-- Le regole sono ancora template/rule-based, non un vero giudizio UX umano.
+## Nota
+Il crawler non è infinito: segue tutti i link interni raggiungibili dalle homepage entro limiti di sicurezza.
+Le soglie di default sono configurabili via env:
+- `PIRELLI_MAX_PAGES_PER_SITE` (default 140)
+- `PIRELLI_MAX_CRAWL_DEPTH` (default 4)
