@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class SitePage:
+    type: str
+    url: str
+
+
+@dataclass
+class Site:
+    code: str
+    country: str
+    region: str
+    language: str
+    base_url: str
+    pages: list[SitePage]
+
+
+@dataclass
+class PageResult:
+    site_code: str
+    country: str
+    region: str
+    language: str
+    url: str
+    page_type: str
+    final_url: str
+    status_code: int | None
+    title: str
+    h1: str
+    h2_count: int
+    canonical: str
+    html: str
+    text: str
+    links: list[str]
+    meta_description: str
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Finding:
+    site_code: str
+    country: str
+    region: str
+    url: str
+    page_type: str
+    category: str
+    severity: str
+    title: str
+    description: str
+    impact: str
+    suggested_fix: str
+    fingerprint: str
+    data: dict[str, Any] = field(default_factory=dict)
