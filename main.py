@@ -1,205 +1,68 @@
-sites:
-  - code: IT
-    country: Italia
-    region: Europa
-    language: it
-    base_url: https://www.pirelli.com/tyres/it-it
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/it-it
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/it-it/auto/home}
+from __future__ import annotations
 
-  - code: DE
-    country: Germania
-    region: Europa
-    language: de
-    base_url: https://www.pirelli.com/tyres/de-de
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/de-de
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/de-de/pkw/homepage}
+import argparse
+import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
 
-  - code: UK
-    country: Regno Unito
-    region: Europa
-    language: en
-    base_url: https://www.pirelli.com/tyres/en-gb
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/en-gb
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/en-gb/car/homepage}
+from audit_engine.config_loader import load_sites
+from audit_engine.crawler import crawl_sites
+from audit_engine.reporting import build_excel, build_markdown_summary
+from audit_engine.rules import run_rules
+from audit_engine.storage import Storage
 
-  - code: FR
-    country: Francia
-    region: Europa
-    language: fr
-    base_url: https://www.pirelli.com/tyres/fr-fr
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/fr-fr
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/fr-fr/voiture/home}
 
-  - code: ES
-    country: Spagna
-    region: Europa
-    language: es
-    base_url: https://www.pirelli.com/tyres/es-es
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/es-es
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/es-es/coche/home}
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description='Pirelli weekly audit MVP V3')
+    parser.add_argument('--config', default='config/sites.yaml')
+    parser.add_argument('--db', default='outputs/audit_history_v3.db')
+    parser.add_argument('--output-dir', default='outputs')
+    return parser.parse_args()
 
-  - code: CH
-    country: Svizzera
-    region: Europa
-    language: multi
-    base_url: https://www.pirelli.com/tyres/it-ch
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/it-ch
-      - https://www.pirelli.com/tyres/de-ch
-      - https://www.pirelli.com/tyres/fr-ch
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/it-ch/auto/homepage}
-      - {type: home, url: https://www.pirelli.com/tyres/de-ch/pkw/homepage}
-      - {type: home, url: https://www.pirelli.com/tyres/fr-ch/voiture/home}
 
-  - code: AT
-    country: Austria
-    region: Europa
-    language: de
-    base_url: https://www.pirelli.com/tyres/de-at
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/de-at
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/de-at/pkw/homepage}
+def main() -> int:
+    args = parse_args()
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-  - code: BE
-    country: Belgio
-    region: Europa
-    language: nl
-    base_url: https://www.pirelli.com/tyres/nl-be
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/nl-be
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/nl-be/auto/homepage}
+    sites = load_sites(args.config)
+    storage = Storage(args.db)
+    started = datetime.now(timezone.utc)
+    run_date = started.date().isoformat()
+    run_id = storage.create_run(run_date=run_date, started_at=started.isoformat())
 
-  - code: US
-    country: USA
-    region: Americhe
-    language: en
-    base_url: https://www.pirelli.com/tires/en-us
-    allowed_prefixes:
-      - https://www.pirelli.com/tires/en-us
-    pages:
-      - {type: home, url: https://www.pirelli.com/tires/en-us/car/homepage}
+    try:
+        pages = asyncio.run(crawl_sites(sites))
+        findings = run_rules(pages)
+        storage.save_pages(run_id, pages)
+        storage.save_findings(run_id, findings)
+        diff = storage.diff_findings(run_id)
 
-  - code: CA
-    country: Canada
-    region: Americhe
-    language: en
-    base_url: https://www.pirelli.com/tires/en-ca
-    allowed_prefixes:
-      - https://www.pirelli.com/tires/en-ca
-    pages:
-      - {type: home, url: https://www.pirelli.com/tires/en-ca/car/homepage}
+        stamp = started.strftime('%Y%m%d_%H%M%S')
+        excel_path = output_dir / f'pirelli_weekly_audit_{stamp}.xlsx'
+        md_path = output_dir / f'pirelli_weekly_summary_{stamp}.md'
+        build_excel(excel_path, pages, findings, diff, run_date)
+        build_markdown_summary(md_path, pages, findings, diff, run_date)
 
-  - code: BR
-    country: Brasile
-    region: Americhe
-    language: pt
-    base_url: https://www.pirelli.com/tyres/pt-br
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/pt-br
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/pt-br/carro/homepage}
+        finished = datetime.now(timezone.utc)
+        storage.finish_run(
+            run_id,
+            finished_at=finished.isoformat(),
+            status='completed',
+            notes=f'Excel: {excel_path.name}; Summary: {md_path.name}',
+        )
 
-  - code: MX
-    country: Messico
-    region: Americhe
-    language: es
-    base_url: https://www.pirelli.com/tyres/es-mx
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/es-mx
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/es-mx/carro/homepage}
+        print(f'Run completed: {run_id}')
+        print(f'Pages checked: {len(pages)}')
+        print(f'Findings: {len(findings)}')
+        print(f'Excel: {excel_path}')
+        print(f'Summary: {md_path}')
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        finished = datetime.now(timezone.utc)
+        storage.finish_run(run_id, finished_at=finished.isoformat(), status='failed', notes=str(exc))
+        raise
 
-  - code: AR
-    country: Argentina
-    region: Americhe
-    language: es
-    base_url: https://www.pirelli.com/tyres/es-ar
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/es-ar
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/es-ar/auto/home}
 
-  - code: CN
-    country: Cina
-    region: Asia e Oceania
-    language: zh
-    base_url: https://www.pirelli.com/tyres/zh-cn
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/zh-cn
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/zh-cn/car/homepage}
-
-  - code: JP
-    country: Giappone
-    region: Asia e Oceania
-    language: ja
-    base_url: https://www.pirelli.com/tyres/ja-jp
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/ja-jp
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/ja-jp/car/homepage}
-
-  - code: AU
-    country: Australia
-    region: Asia e Oceania
-    language: en
-    base_url: https://www.pirelli.com/tyres/en-au
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/en-au
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/en-au/car/homepage}
-
-  - code: IN
-    country: India
-    region: Asia e Oceania
-    language: en
-    base_url: https://www.pirelli.com/tyres/en-in
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/en-in
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/en-in/car/homepage}
-
-  - code: AE
-    country: Emirati Arabi Uniti
-    region: Medio Oriente e Africa
-    language: en
-    base_url: https://www.pirelli.com/tires/en-gcc
-    allowed_prefixes:
-      - https://www.pirelli.com/tires/en-gcc
-      - https://www.pirelli.com/tyres/en-ae
-    pages:
-      - {type: home, url: https://www.pirelli.com/tires/en-gcc/car/homepage}
-
-  - code: ZA
-    country: Sud Africa
-    region: Medio Oriente e Africa
-    language: en
-    base_url: https://www.pirelli.com/tyres/en-za
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/en-za
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/en-za}
-
-  - code: TR
-    country: Turchia
-    region: Medio Oriente e Africa
-    language: tr
-    base_url: https://www.pirelli.com/tyres/tr-tr
-    allowed_prefixes:
-      - https://www.pirelli.com/tyres/tr-tr
-    pages:
-      - {type: home, url: https://www.pirelli.com/tyres/tr-tr/otomobil/anasayfa}
+if __name__ == '__main__':
+    raise SystemExit(main())
