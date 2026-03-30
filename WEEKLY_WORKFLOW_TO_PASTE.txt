@@ -1,28 +1,16 @@
-# Pirelli Weekly Audit MVP V3 FIXED
-
-Usa **solo questa versione** per aggiornare il repo.
-
-## Cosa aspettarti nel nuovo Excel
-Se la versione corretta è davvero in esecuzione, nel workbook troverai:
-- foglio `Build Info`
-- `Summary!A1 = Pirelli Weekly Audit V3_FIXED_20260331`
-- nel foglio `Pages` le colonne `crawl_depth` e `discovered_from`
-- nel foglio `Findings` le colonne:
-  - `titolo_bug`
-  - `spiegazione_bug_it`
-  - `impatto_utenti_business`
-  - `fix_consigliato_it`
-  - `confidence`
-  - `pagina_trovata_da`
-  - `crawl_depth`
-
-## Cosa caricare su GitHub
-Sovrascrivi questi elementi:
-- `main.py`
-- `requirements.txt`
-- `README.md`
-- cartella `audit_engine`
-- cartella `config`
-
-## Workflow
-Se vuoi evitare di toccare il file nascosto `.github/workflows/weekly_audit.yml`, usa il file `WEEKLY_WORKFLOW_TO_PASTE.txt` contenuto in questo zip: aprilo, copia tutto e incollalo dentro il workflow esistente su GitHub.
+1. Estrai questo zip.
+2. Nel repo GitHub carica e sovrascrivi:
+   - main.py
+   - requirements.txt
+   - README.md
+   - cartella audit_engine
+   - cartella config
+   - WEEKLY_WORKFLOW_TO_PASTE.txt
+   - COME_AGGIORNARE_GITHUB.txt
+3. Apri .github/workflows/weekly_audit.yml
+4. Cancella tutto e incolla il contenuto di WEEKLY_WORKFLOW_TO_PASTE.txt
+5. Commit changes
+6. Vai su Actions > Pirelli Weekly Audit > Run workflow
+7. Nel nuovo Excel controlla:
+   - fogli 00_Sintesi, 01_Priorita, 10_Bug_Tutti, 11_Bug_Codice_Tecnica, 12_Bug_SEO, 13_Bug_UX_UI, 14_Bug_Contenuti_Localizzazione, 15_Bug_Accessibilita, 16_Bug_CRO
+   - Build Info con build_version V4_20260331

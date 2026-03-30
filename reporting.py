@@ -1,154 +1,238 @@
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
-from typing import Iterable
+import asyncio
+import os
+import re
+from collections import deque
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse, urldefrag
 
-from .models import Finding, PageResult
+from bs4 import BeautifulSoup
+from playwright.async_api import Browser, BrowserContext, async_playwright
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_date TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    status TEXT NOT NULL,
-    notes TEXT
-);
+from .models import PageResult, Site
 
-CREATE TABLE IF NOT EXISTS pages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL,
-    site_code TEXT NOT NULL,
-    country TEXT NOT NULL,
-    region TEXT NOT NULL,
-    language TEXT NOT NULL,
-    url TEXT NOT NULL,
-    page_type TEXT NOT NULL,
-    final_url TEXT,
-    status_code INTEGER,
-    title TEXT,
-    h1 TEXT,
-    h2_count INTEGER,
-    canonical TEXT,
-    meta_description TEXT,
-    crawl_depth INTEGER DEFAULT 0,
-    discovered_from TEXT,
-    errors TEXT,
-    FOREIGN KEY(run_id) REFERENCES runs(id)
-);
-
-CREATE TABLE IF NOT EXISTS findings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id INTEGER NOT NULL,
-    site_code TEXT NOT NULL,
-    country TEXT NOT NULL,
-    region TEXT NOT NULL,
-    url TEXT NOT NULL,
-    page_type TEXT NOT NULL,
-    category TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    title TEXT NOT NULL,
-    explanation_it TEXT NOT NULL,
-    impact_it TEXT NOT NULL,
-    suggested_fix_it TEXT NOT NULL,
-    evidence_tecnica TEXT NOT NULL,
-    confidence TEXT NOT NULL,
-    crawl_depth INTEGER DEFAULT 0,
-    discovered_from TEXT,
-    fingerprint TEXT NOT NULL,
-    UNIQUE(run_id, fingerprint),
-    FOREIGN KEY(run_id) REFERENCES runs(id)
-);
-"""
-
-PAGE_COLUMNS = {
-    'crawl_depth': 'ALTER TABLE pages ADD COLUMN crawl_depth INTEGER DEFAULT 0',
-    'discovered_from': 'ALTER TABLE pages ADD COLUMN discovered_from TEXT',
-}
-FINDING_COLUMNS = {
-    'explanation_it': 'ALTER TABLE findings ADD COLUMN explanation_it TEXT DEFAULT ""',
-    'impact_it': 'ALTER TABLE findings ADD COLUMN impact_it TEXT DEFAULT ""',
-    'suggested_fix_it': 'ALTER TABLE findings ADD COLUMN suggested_fix_it TEXT DEFAULT ""',
-    'evidence_tecnica': 'ALTER TABLE findings ADD COLUMN evidence_tecnica TEXT DEFAULT ""',
-    'confidence': 'ALTER TABLE findings ADD COLUMN confidence TEXT DEFAULT "Media"',
-    'crawl_depth': 'ALTER TABLE findings ADD COLUMN crawl_depth INTEGER DEFAULT 0',
-    'discovered_from': 'ALTER TABLE findings ADD COLUMN discovered_from TEXT',
-}
+IGNORE_EXTENSIONS = (
+    '.jpg', '.jpeg', '.png', '.gif', '.svg', '.webp', '.pdf', '.zip', '.xml', '.json', '.mp4', '.webm', '.css', '.js',
+    '.ico', '.woff', '.woff2', '.ttf'
+)
+TRACKING_QUERY_KEYS = {'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'fbclid'}
+MAX_PAGES_PER_SITE = int(os.getenv('PIRELLI_MAX_PAGES_PER_SITE', '220'))
+MAX_CRAWL_DEPTH = int(os.getenv('PIRELLI_MAX_CRAWL_DEPTH', '5'))
+IGNORED_PATTERNS = ('/search?', '/ricerca?', '/?search=', '/login', '/signin', '/account', '/cart', '/checkout')
+IMPORTANT_HINTS = ('catalog', 'catalogo', 'catalogue', 'dealer', 'rivenditor', 'distribut', 'faq', 'technology', 'tecnologia', 'elect', 'season', 'winter', 'summer', 'all-season')
 
 
-class Storage:
-    def __init__(self, db_path: str | Path) -> None:
-        self.db_path = str(db_path)
-        self.conn = sqlite3.connect(self.db_path)
-        self.conn.execute('PRAGMA foreign_keys = ON')
-        self.conn.executescript(SCHEMA)
-        self._migrate_if_needed()
-        self.conn.commit()
 
-    def _column_names(self, table: str) -> set[str]:
-        cur = self.conn.execute(f'PRAGMA table_info({table})')
-        return {row[1] for row in cur.fetchall()}
+def _normalize_url(url: str) -> str:
+    clean, _ = urldefrag(url)
+    parsed = urlparse(clean)
+    query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k.lower() not in TRACKING_QUERY_KEYS]
+    normalized = parsed._replace(query=urlencode(query, doseq=True))
+    rebuilt = urlunparse(normalized)
+    if rebuilt.endswith('/') and normalized.path not in ('/', ''):
+        rebuilt = rebuilt.rstrip('/')
+    return rebuilt
 
-    def _migrate_if_needed(self) -> None:
-        page_cols = self._column_names('pages')
-        for col, ddl in PAGE_COLUMNS.items():
-            if col not in page_cols:
-                self.conn.execute(ddl)
-        finding_cols = self._column_names('findings')
-        for col, ddl in FINDING_COLUMNS.items():
-            if col not in finding_cols:
-                self.conn.execute(ddl)
 
-    def create_run(self, run_date: str, started_at: str) -> int:
-        cur = self.conn.cursor()
-        cur.execute('INSERT INTO runs(run_date, started_at, status) VALUES (?, ?, ?)', (run_date, started_at, 'running'))
-        self.conn.commit()
-        return int(cur.lastrowid)
 
-    def finish_run(self, run_id: int, finished_at: str, status: str = 'completed', notes: str = '') -> None:
-        self.conn.execute('UPDATE runs SET finished_at = ?, status = ?, notes = ? WHERE id = ?', (finished_at, status, notes, run_id))
-        self.conn.commit()
+def _market_prefixes(site: Site) -> list[tuple[str, str]]:
+    prefixes: list[tuple[str, str]] = []
+    for raw in (site.allowed_prefixes or [site.base_url]):
+        parsed = urlparse(raw)
+        prefixes.append((parsed.netloc, parsed.path.rstrip('/')))
+    return prefixes
 
-    def save_pages(self, run_id: int, pages: Iterable[PageResult]) -> None:
-        self.conn.executemany(
-            '''INSERT INTO pages(run_id, site_code, country, region, language, url, page_type, final_url, status_code, title, h1, h2_count, canonical, meta_description, crawl_depth, discovered_from, errors)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            [(
-                run_id, p.site_code, p.country, p.region, p.language, p.url, p.page_type, p.final_url, p.status_code,
-                p.title, p.h1, p.h2_count, p.canonical, p.meta_description, p.crawl_depth, p.discovered_from, ' | '.join(p.errors)
-            ) for p in pages]
-        )
-        self.conn.commit()
 
-    def save_findings(self, run_id: int, findings: Iterable[Finding]) -> None:
-        self.conn.executemany(
-            '''INSERT OR IGNORE INTO findings(run_id, site_code, country, region, url, page_type, category, severity, title, explanation_it, impact_it, suggested_fix_it, evidence_tecnica, confidence, crawl_depth, discovered_from, fingerprint)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            [(
-                run_id, f.site_code, f.country, f.region, f.url, f.page_type, f.category, f.severity,
-                f.title, f.explanation_it, f.impact_it, f.suggested_fix_it, f.evidence_tecnica, f.confidence, f.crawl_depth, f.discovered_from, f.fingerprint
-            ) for f in findings]
-        )
-        self.conn.commit()
 
-    def previous_run_id(self, current_run_id: int) -> int | None:
-        cur = self.conn.cursor()
-        cur.execute('SELECT id FROM runs WHERE id < ? AND status = ? ORDER BY id DESC LIMIT 1', (current_run_id, 'completed'))
-        row = cur.fetchone()
-        return int(row[0]) if row else None
+def _same_market(site: Site, url: str) -> bool:
+    try:
+        target = urlparse(url)
+    except Exception:
+        return False
+    if target.scheme not in ('http', 'https'):
+        return False
+    lower = target.path.lower()
+    if lower.endswith(IGNORE_EXTENSIONS) or any(pattern in url.lower() for pattern in IGNORED_PATTERNS):
+        return False
+    for netloc, path_prefix in _market_prefixes(site):
+        if target.netloc != netloc:
+            continue
+        if not path_prefix:
+            return True
+        if target.path.rstrip('/').startswith(path_prefix):
+            return True
+    return False
 
-    def diff_findings(self, current_run_id: int) -> dict[str, set[str]]:
-        prev_run = self.previous_run_id(current_run_id)
-        cur = self.conn.cursor()
-        cur.execute('SELECT fingerprint FROM findings WHERE run_id = ?', (current_run_id,))
-        current = {row[0] for row in cur.fetchall()}
-        if prev_run is None:
-            return {'new': current, 'resolved': set(), 'persistent': set()}
-        cur.execute('SELECT fingerprint FROM findings WHERE run_id = ?', (prev_run,))
-        previous = {row[0] for row in cur.fetchall()}
-        return {
-            'new': current - previous,
-            'resolved': previous - current,
-            'persistent': current & previous,
-        }
+
+
+def _guess_page_type(url: str) -> str:
+    lower = url.lower()
+    if 'dealer' in lower or 'rivenditor' in lower or 'distribuidor' in lower or 'haendler' in lower or 'dealer-locator' in lower:
+        return 'dealer'
+    if 'catalog' in lower or 'catalogo' in lower or 'katalog' in lower or 'catalogue' in lower:
+        return 'catalogue'
+    if 'faq' in lower:
+        return 'faq'
+    if 'elect' in lower or 'technology' in lower or 'tecnologia' in lower or 'wissenswertes' in lower:
+        return 'technology'
+    if 'homepage' in lower or lower.endswith('/home') or 'anasayfa' in lower:
+        return 'home'
+    return 'internal'
+
+
+
+def _priority(url: str) -> tuple[int, int, str]:
+    lower = url.lower()
+    important = 0 if any(h in lower for h in IMPORTANT_HINTS) else 1
+    slash_depth = lower.count('/')
+    return (important, slash_depth, lower)
+
+
+
+def _extract_links_from_html(base_url: str, html: str) -> list[str]:
+    soup = BeautifulSoup(html, 'lxml')
+    candidates: set[str] = set()
+    attrs = [('a', 'href'), ('link', 'href'), ('area', 'href'), ('iframe', 'src')]
+    for tag, attr in attrs:
+        for el in soup.find_all(tag):
+            value = el.get(attr)
+            if not value:
+                continue
+            value = str(value).strip()
+            if value.startswith('#') or value.startswith('javascript:') or value.startswith('mailto:') or value.startswith('tel:'):
+                continue
+            candidates.add(_normalize_url(urljoin(base_url, value)))
+
+    for el in soup.find_all(attrs={'data-href': True}):
+        value = str(el.get('data-href', '')).strip()
+        if value:
+            candidates.add(_normalize_url(urljoin(base_url, value)))
+
+    # very light fallback for embedded JSON/html fragments containing absolute or root-relative URLs
+    for match in re.findall(r'"(https?://[^"\s]+|/[^"\s]+)"', html):
+        candidates.add(_normalize_url(urljoin(base_url, match)))
+
+    return sorted(candidates)
+
+
+async def _fetch_page(context: BrowserContext, site: Site, page_type: str, url: str, crawl_depth: int = 0, discovered_from: str = '') -> PageResult:
+    page = await context.new_page()
+    errors: list[str] = []
+    response = None
+    try:
+        response = await page.goto(url, wait_until='domcontentloaded', timeout=45000)
+        try:
+            await page.wait_for_load_state('networkidle', timeout=8000)
+        except Exception:
+            pass
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await page.wait_for_timeout(1000)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f'navigation_error: {exc}')
+
+    final_url = page.url or url
+    html = ''
+    title = ''
+    text = ''
+    h1 = ''
+    h2_count = 0
+    canonical = ''
+    meta_description = ''
+    links: list[str] = []
+
+    try:
+        html = await page.content()
+        soup = BeautifulSoup(html, 'lxml')
+        title = (soup.title.get_text(' ', strip=True) if soup.title else '')
+        h1_el = soup.find('h1')
+        h1 = h1_el.get_text(' ', strip=True) if h1_el else ''
+        h2_count = len(soup.find_all('h2'))
+        canonical_el = soup.find('link', attrs={'rel': lambda v: v and 'canonical' in v})
+        canonical = canonical_el.get('href', '') if canonical_el else ''
+        meta_el = soup.find('meta', attrs={'name': 'description'})
+        meta_description = meta_el.get('content', '') if meta_el else ''
+        text = soup.get_text('\n', strip=True)
+        links = _extract_links_from_html(final_url, html)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f'parse_error: {exc}')
+
+    status_code = response.status if response else None
+    await page.close()
+    return PageResult(
+        site_code=site.code,
+        country=site.country,
+        region=site.region,
+        language=site.language,
+        url=url,
+        page_type=page_type,
+        final_url=final_url,
+        status_code=status_code,
+        title=title,
+        h1=h1,
+        h2_count=h2_count,
+        canonical=canonical,
+        html=html,
+        text=text,
+        links=links,
+        meta_description=meta_description,
+        crawl_depth=crawl_depth,
+        discovered_from=discovered_from,
+        errors=errors,
+    )
+
+
+async def _crawl_site(context: BrowserContext, site: Site) -> list[PageResult]:
+    results: list[PageResult] = []
+    visited: set[str] = set()
+    queued: set[str] = set()
+    queue: deque[tuple[str, str, int, str]] = deque()
+
+    for pg in site.pages:
+        seed = _normalize_url(pg.url)
+        queue.append((seed, pg.type, 0, 'seed_homepage'))
+        queued.add(seed)
+
+    while queue and len(visited) < MAX_PAGES_PER_SITE:
+        # prioritize likely important paths first
+        queue = deque(sorted(queue, key=lambda item: _priority(item[0])))
+        url, page_type, depth, discovered_from = queue.popleft()
+        normalized = _normalize_url(url)
+        if normalized in visited or not _same_market(site, normalized):
+            continue
+        visited.add(normalized)
+        result = await _fetch_page(context, site, page_type, normalized, crawl_depth=depth, discovered_from=discovered_from)
+        results.append(result)
+
+        if depth >= MAX_CRAWL_DEPTH:
+            continue
+        if result.status_code and result.status_code >= 400:
+            continue
+
+        for link in result.links:
+            normalized_link = _normalize_url(link)
+            if normalized_link in visited or normalized_link in queued:
+                continue
+            if not _same_market(site, normalized_link):
+                continue
+            queue.append((normalized_link, _guess_page_type(normalized_link), depth + 1, result.final_url or result.url))
+            queued.add(normalized_link)
+
+    return results
+
+
+async def crawl_sites(sites: list[Site]) -> list[PageResult]:
+    results: list[PageResult] = []
+    async with async_playwright() as p:
+        browser: Browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(ignore_https_errors=True)
+        sem = asyncio.Semaphore(2)
+
+        async def run_one(site: Site) -> None:
+            async with sem:
+                site_results = await _crawl_site(context, site)
+                results.extend(site_results)
+
+        await asyncio.gather(*[run_one(site) for site in sites])
+        await context.close()
+        await browser.close()
+    return results
