@@ -1,0 +1,28 @@
+# Pirelli Weekly Audit MVP V3 FIXED
+
+Usa **solo questa versione** per aggiornare il repo.
+
+## Cosa aspettarti nel nuovo Excel
+Se la versione corretta è davvero in esecuzione, nel workbook troverai:
+- foglio `Build Info`
+- `Summary!A1 = Pirelli Weekly Audit V3_FIXED_20260331`
+- nel foglio `Pages` le colonne `crawl_depth` e `discovered_from`
+- nel foglio `Findings` le colonne:
+  - `titolo_bug`
+  - `spiegazione_bug_it`
+  - `impatto_utenti_business`
+  - `fix_consigliato_it`
+  - `confidence`
+  - `pagina_trovata_da`
+  - `crawl_depth`
+
+## Cosa caricare su GitHub
+Sovrascrivi questi elementi:
+- `main.py`
+- `requirements.txt`
+- `README.md`
+- cartella `audit_engine`
+- cartella `config`
+
+## Workflow
+Se vuoi evitare di toccare il file nascosto `.github/workflows/weekly_audit.yml`, usa il file `WEEKLY_WORKFLOW_TO_PASTE.txt` contenuto in questo zip: aprilo, copia tutto e incollalo dentro il workflow esistente su GitHub.

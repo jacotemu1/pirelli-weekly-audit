@@ -10,6 +10,7 @@ from openpyxl.utils import get_column_letter
 
 from .models import Finding, PageResult
 
+BUILD_VERSION = 'V3_FIXED_20260331'
 SEVERITY_WEIGHT = {'Critica': 10, 'Alta': 5, 'Media': 2, 'Bassa': 1}
 
 
@@ -106,28 +107,30 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
     summary_df = pd.DataFrame(summary_rows).sort_values(['quality_score_estimate', 'findings_total'], ascending=[False, True]) if summary_rows else pd.DataFrame()
 
     summary_ws = wb.create_sheet('Summary')
-    summary_ws['A1'] = 'Pirelli Weekly Audit V3'
+    summary_ws['A1'] = f'Pirelli Weekly Audit {BUILD_VERSION}'
     summary_ws['A1'].font = Font(bold=True, size=14)
-    summary_ws['A2'] = 'Run date'
-    summary_ws['B2'] = run_date
-    summary_ws['A3'] = 'Pages checked'
-    summary_ws['B3'] = len(pages)
-    summary_ws['A4'] = 'Findings total'
-    summary_ws['B4'] = len(findings)
-    summary_ws['A5'] = 'New findings vs previous run'
-    summary_ws['B5'] = len(diff['new'])
-    summary_ws['A6'] = 'Resolved findings vs previous run'
-    summary_ws['B6'] = len(diff['resolved'])
-    summary_ws['A7'] = 'Persistent findings vs previous run'
-    summary_ws['B7'] = len(diff['persistent'])
-    summary_ws['A9'] = 'Per-site summary'
-    summary_ws['A9'].font = Font(bold=True)
+    summary_ws['A2'] = 'Build version'
+    summary_ws['B2'] = BUILD_VERSION
+    summary_ws['A3'] = 'Run date'
+    summary_ws['B3'] = run_date
+    summary_ws['A4'] = 'Pages checked'
+    summary_ws['B4'] = len(pages)
+    summary_ws['A5'] = 'Findings total'
+    summary_ws['B5'] = len(findings)
+    summary_ws['A6'] = 'New findings vs previous run'
+    summary_ws['B6'] = len(diff['new'])
+    summary_ws['A7'] = 'Resolved findings vs previous run'
+    summary_ws['B7'] = len(diff['resolved'])
+    summary_ws['A8'] = 'Persistent findings vs previous run'
+    summary_ws['B8'] = len(diff['persistent'])
+    summary_ws['A10'] = 'Per-site summary'
+    summary_ws['A10'].font = Font(bold=True)
     if not summary_df.empty:
-        for row_idx, row in enumerate([summary_df.columns.tolist()] + summary_df.values.tolist(), start=10):
+        for row_idx, row in enumerate([summary_df.columns.tolist()] + summary_df.values.tolist(), start=11):
             for col_idx, value in enumerate(row, start=1):
                 cell = summary_ws.cell(row=row_idx, column=col_idx, value=value)
                 cell.alignment = Alignment(vertical='top', wrap_text=True)
-                if row_idx == 10:
+                if row_idx == 11:
                     cell.font = Font(bold=True)
                     cell.fill = PatternFill('solid', fgColor='D9EAD3')
     _auto_width(summary_ws)
@@ -143,6 +146,17 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
             'sample_urls': ' | '.join(sample_urls),
         })
     coverage_df = pd.DataFrame(coverage_rows)
+
+    build_ws = wb.create_sheet('Build Info')
+    build_ws.append(['key', 'value'])
+    build_ws.append(['build_version', BUILD_VERSION])
+    build_ws.append(['run_date', run_date])
+    build_ws.append(['pages_checked', len(pages)])
+    build_ws.append(['findings_total', len(findings)])
+    for cell in build_ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill('solid', fgColor='D9EAD3')
+    _auto_width(build_ws)
 
     for name, df in [('Pages', pages_df), ('Findings', findings_df), ('Coverage', coverage_df)]:
         ws = wb.create_sheet(name)
