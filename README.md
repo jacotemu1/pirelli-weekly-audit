@@ -7,8 +7,8 @@
    - cartella config
    - WEEKLY_WORKFLOW_TO_PASTE.txt
    - COME_AGGIORNARE_GITHUB.txt
-3. Apri .github/workflows/weekly_audit.yml
-4. Cancella tutto e incolla il contenuto di WEEKLY_WORKFLOW_TO_PASTE.txt
+3. Verifica che esista `.github/workflows/weekly_audit.yml` (già incluso in questo pacchetto).
+4. In alternativa, se vuoi aggiornare il workflow manualmente, apri `.github/workflows/weekly_audit.yml` e incolla il contenuto di `.github/workflows/WEEKLY_WORKFLOW_TO_PASTE.txt`.
 5. Commit changes
 6. Vai su Actions > Pirelli Weekly Audit > Run workflow
 7. Nel nuovo Excel controlla:

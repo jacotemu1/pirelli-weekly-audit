@@ -12,6 +12,17 @@ from openpyxl.utils import get_column_letter
 from .models import Finding, PageResult
 
 SEVERITY_RANK = {'Critica': 4, 'Alta': 3, 'Media': 2, 'Bassa': 1}
+SEVERITY_WEIGHT = {'Critica': 10, 'Alta': 5, 'Media': 2, 'Bassa': 1}
+CATEGORY_SHEETS = {
+    'technical': '11_Bug_Codice_Tecnica',
+    'seo': '12_Bug_SEO',
+    'ux': '13_Bug_UX_UI',
+    'content': '14_Bug_Contenuti_Localizzazione',
+    'accessibility': '15_Bug_Accessibilita',
+    'cro': '16_Bug_CRO',
+    'fitment': '17_Bug_Fitment',
+    'Fitment': '17_Bug_Fitment',
+}
 
 
 def _auto_width(ws) -> None:
@@ -24,6 +35,59 @@ def _auto_width(ws) -> None:
             except Exception:
                 pass
         ws.column_dimensions[col_letter].width = min(max_len + 2, 40)
+
+
+def _sheet_from_df(wb: Workbook, name: str, df: pd.DataFrame) -> None:
+    ws = wb.create_sheet(name)
+    if df.empty:
+        ws['A1'] = 'No data'
+        return
+    for row_idx, row in enumerate([df.columns.tolist()] + df.values.tolist(), start=1):
+        for col_idx, value in enumerate(row, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.alignment = Alignment(vertical='top', wrap_text=True)
+            if row_idx == 1:
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill('solid', fgColor='D9EAD3')
+    _auto_width(ws)
+
+
+def _finding_confidence(f: Finding) -> str:
+    if getattr(f, 'confidence', ''):
+        return str(f.confidence)
+    if isinstance(f.data, dict):
+        return str(f.data.get('confidence') or 'Media')
+    return 'Media'
+
+
+def _finding_evidence(f: Finding) -> str:
+    if getattr(f, 'evidence_tecnica', ''):
+        return str(f.evidence_tecnica)
+    if isinstance(f.data, dict) and f.data.get('evidenza_tecnica'):
+        return str(f.data['evidenza_tecnica'])
+    return f'category={f.category}; severity={f.severity}; url={f.url}'
+
+
+def _finding_discovered_from(f: Finding) -> str:
+    if getattr(f, 'discovered_from', ''):
+        return str(f.discovered_from)
+    if isinstance(f.data, dict):
+        return str(f.data.get('discovered_from') or '')
+    return ''
+
+
+def _finding_crawl_depth(f: Finding) -> int:
+    if getattr(f, 'crawl_depth', None) is not None:
+        try:
+            return int(f.crawl_depth)
+        except Exception:
+            pass
+    if isinstance(f.data, dict):
+        try:
+            return int(f.data.get('crawl_depth') or 0)
+        except Exception:
+            return 0
+    return 0
 
 
 def build_excel(output_path: str | Path, pages: list[PageResult], findings: list[Finding], diff: dict[str, set[str]], run_date: str) -> None:
@@ -45,105 +109,128 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
             'h2_count': p.h2_count,
             'canonical': p.canonical,
             'meta_description': p.meta_description,
+            'crawl_depth': getattr(p, 'crawl_depth', 0),
+            'discovered_from': getattr(p, 'discovered_from', ''),
             'errors': ' | '.join(p.errors),
         }
         for p in pages
     ])
-    findings_df = pd.DataFrame([
+    bugs_df = pd.DataFrame([
         {
-            'site_code': f.site_code,
-            'country': f.country,
-            'region': f.region,
-            'page_type': f.page_type,
-            'url': f.url,
-            'category': f.category,
-            'severity': f.severity,
-            'title': f.title,
-            'description': f.description,
-            'impact': f.impact,
-            'suggested_fix': f.suggested_fix,
+            'mercato': f.site_code,
+            'paese': f.country,
+            'regione': f.region,
+            'area_bug': f.category,
+            'gravita': f.severity,
+            'titolo_bug': f.title,
+            'spiegazione_bug_it': f.description,
+            'impatto_utenti_business': f.impact,
+            'fix_consigliato_it': f.suggested_fix,
+            'evidenza_tecnica': _finding_evidence(f),
+            'confidence': _finding_confidence(f),
+            'pagina': f.url,
+            'tipo_pagina': f.page_type,
+            'pagina_trovata_da': _finding_discovered_from(f),
+            'crawl_depth': _finding_crawl_depth(f),
+            'fitment_tipo': getattr(f, 'fitment_tipo', '') or (f.data.get('fitment_tipo', '') if isinstance(f.data, dict) else ''),
+            'fitment_step': getattr(f, 'fitment_step', '') or (f.data.get('fitment_step', '') if isinstance(f.data, dict) else ''),
             'fingerprint': f.fingerprint,
-            'diff_status': 'new' if f.fingerprint in diff['new'] else 'persistent' if f.fingerprint in diff['persistent'] else '',
+            'stato_settimanale': 'new' if f.fingerprint in diff['new'] else 'persistent' if f.fingerprint in diff['persistent'] else '',
         }
         for f in findings
     ])
 
-    summary_rows = []
-    grouped = findings_df.groupby(['site_code', 'country'], dropna=False) if not findings_df.empty else []
-    counts_by_site = Counter()
-    high_by_site = Counter()
-    crit_by_site = Counter()
-    for f in findings:
-        counts_by_site[f.site_code] += 1
-        if f.severity == 'Alta':
-            high_by_site[f.site_code] += 1
-        if f.severity == 'Critica':
-            crit_by_site[f.site_code] += 1
+    counts_by_site = Counter(f.site_code for f in findings)
+    crit_by_site = Counter(f.site_code for f in findings if f.severity == 'Critica')
+    high_by_site = Counter(f.site_code for f in findings if f.severity == 'Alta')
     site_pages = Counter(p.site_code for p in pages)
     site_regions = {p.site_code: p.region for p in pages}
     site_countries = {p.site_code: p.country for p in pages}
+    coverage_rows = []
     for site_code in sorted(site_pages):
-        total = counts_by_site[site_code]
-        score = max(0, 100 - (crit_by_site[site_code] * 25 + high_by_site[site_code] * 12 + max(total - crit_by_site[site_code] - high_by_site[site_code], 0) * 4))
-        summary_rows.append({
-            'site_code': site_code,
-            'country': site_countries.get(site_code, ''),
-            'region': site_regions.get(site_code, ''),
-            'pages_checked': site_pages[site_code],
-            'findings_total': total,
-            'critical': crit_by_site[site_code],
-            'high': high_by_site[site_code],
-            'quality_score_estimate': score,
-        })
-    summary_df = pd.DataFrame(summary_rows).sort_values(['quality_score_estimate', 'findings_total'], ascending=[False, True]) if summary_rows else pd.DataFrame()
+        total_pages = site_pages[site_code]
+        total_findings = counts_by_site.get(site_code, 0)
+        priority_score = sum(SEVERITY_WEIGHT.get(f.severity, 1) for f in findings if f.site_code == site_code)
+        quality_score = max(0, 100 - (crit_by_site[site_code] * 25 + high_by_site[site_code] * 12 + max(total_findings - crit_by_site[site_code] - high_by_site[site_code], 0) * 4))
+        coverage_rows.append(
+            {
+                'mercato': site_code,
+                'paese': site_countries.get(site_code, ''),
+                'regione': site_regions.get(site_code, ''),
+                'pagine_crawlate': total_pages,
+                'bug_totali': total_findings,
+                'bug_critici': crit_by_site.get(site_code, 0),
+                'bug_alti': high_by_site.get(site_code, 0),
+                'priority_score': priority_score,
+                'quality_score_estimate': quality_score,
+            }
+        )
+    coverage_df = pd.DataFrame(coverage_rows)
 
-    meta_ws = wb.create_sheet('Summary')
-    meta_ws['A1'] = 'Pirelli Weekly Audit'
-    meta_ws['A1'].font = Font(bold=True, size=14)
-    meta_ws['A2'] = 'Run date'
-    meta_ws['B2'] = run_date
-    meta_ws['A3'] = 'Pages checked'
-    meta_ws['B3'] = len(pages)
-    meta_ws['A4'] = 'Findings total'
-    meta_ws['B4'] = len(findings)
-    meta_ws['A5'] = 'New findings vs previous run'
-    meta_ws['B5'] = len(diff['new'])
-    meta_ws['A6'] = 'Resolved findings vs previous run'
-    meta_ws['B6'] = len(diff['resolved'])
-    meta_ws['A8'] = 'Per-site summary'
-    meta_ws['A8'].font = Font(bold=True)
-    if not summary_df.empty:
-        for row_idx, row in enumerate([summary_df.columns.tolist()] + summary_df.values.tolist(), start=9):
-            for col_idx, value in enumerate(row, start=1):
-                cell = meta_ws.cell(row=row_idx, column=col_idx, value=value)
-                if row_idx == 9:
-                    cell.font = Font(bold=True)
-                    cell.fill = PatternFill('solid', fgColor='D9EAD3')
-    _auto_width(meta_ws)
+    sintesi_df = pd.DataFrame(
+        [
+            {'metrica': 'run_date', 'valore': run_date},
+            {'metrica': 'pagine_crawlate', 'valore': len(pages)},
+            {'metrica': 'bug_totali', 'valore': len(findings)},
+            {'metrica': 'bug_nuovi', 'valore': len(diff['new'])},
+            {'metrica': 'bug_risolti', 'valore': len(diff['resolved'])},
+            {'metrica': 'bug_persistenti', 'valore': len(diff['persistent'])},
+        ]
+    )
 
-    for name, df in [('Pages', pages_df), ('Findings', findings_df)]:
-        ws = wb.create_sheet(name)
-        if df.empty:
-            ws['A1'] = 'No data'
-        else:
-            for row_idx, row in enumerate([df.columns.tolist()] + df.values.tolist(), start=1):
-                for col_idx, value in enumerate(row, start=1):
-                    cell = ws.cell(row=row_idx, column=col_idx, value=value)
-                    if row_idx == 1:
-                        cell.font = Font(bold=True)
-                        cell.fill = PatternFill('solid', fgColor='D9EAD3')
-                    cell.alignment = Alignment(vertical='top', wrap_text=True)
-        _auto_width(ws)
+    priorita_df = coverage_df.sort_values(['priority_score', 'bug_totali'], ascending=[False, False]) if not coverage_df.empty else pd.DataFrame()
+    diff_df = bugs_df[['mercato', 'paese', 'area_bug', 'gravita', 'titolo_bug', 'pagina', 'fingerprint', 'stato_settimanale']].copy() if not bugs_df.empty else pd.DataFrame()
+    pages_sheet_df = pages_df.rename(
+        columns={
+            'site_code': 'mercato',
+            'country': 'paese',
+            'region': 'regione',
+            'language': 'lingua',
+            'page_type': 'tipo_pagina',
+            'url': 'url_seed',
+        }
+    )
 
-    diff_ws = wb.create_sheet('Weekly Diff')
-    diff_ws.append(['type', 'count'])
-    diff_ws.append(['new', len(diff['new'])])
-    diff_ws.append(['resolved', len(diff['resolved'])])
-    diff_ws.append(['persistent', len(diff['persistent'])])
-    for cell in diff_ws[1]:
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill('solid', fgColor='D9EAD3')
-    _auto_width(diff_ws)
+    raw_rows = []
+    for p in pages:
+        raw_rows.append(
+            {
+                'mercato': p.site_code,
+                'url': p.final_url or p.url,
+                'status_code': p.status_code,
+                'title': p.title,
+                'h1': p.h1,
+                'meta_description': p.meta_description,
+                'canonical': p.canonical,
+                'links_count': len(p.links),
+                'html_chars': len(p.html or ''),
+                'text_chars': len(p.text or ''),
+                'errors': ' | '.join(p.errors),
+            }
+        )
+    raw_df = pd.DataFrame(raw_rows)
+
+    _sheet_from_df(wb, '00_Sintesi', sintesi_df)
+    _sheet_from_df(wb, '01_Priorita', priorita_df)
+    _sheet_from_df(wb, '02_Diff_settimanale', diff_df)
+    _sheet_from_df(wb, '10_Bug_Tutti', bugs_df)
+    for category, sheet_name in CATEGORY_SHEETS.items():
+        category_df = bugs_df[bugs_df['area_bug'] == category].copy() if not bugs_df.empty else pd.DataFrame()
+        _sheet_from_df(wb, sheet_name, category_df)
+    _sheet_from_df(wb, '90_Pagine_Crawlate', pages_sheet_df)
+    _sheet_from_df(wb, '91_Coverage', coverage_df)
+    _sheet_from_df(wb, '99_Raw_Tecnico', raw_df)
+
+    build_info_df = pd.DataFrame(
+        [
+            {'chiave': 'build_version', 'valore': 'V5_20260331'},
+            {'chiave': 'generated_at_utc', 'valore': datetime.utcnow().isoformat(timespec='seconds')},
+            {'chiave': 'run_date', 'valore': run_date},
+            {'chiave': 'pages_checked', 'valore': len(pages)},
+            {'chiave': 'findings', 'valore': len(findings)},
+        ]
+    )
+    _sheet_from_df(wb, 'Build Info', build_info_df)
 
     wb.save(output_path)
 
