@@ -20,6 +20,8 @@ CATEGORY_SHEETS = {
     'content': '14_Bug_Contenuti_Localizzazione',
     'accessibility': '15_Bug_Accessibilita',
     'cro': '16_Bug_CRO',
+    'fitment': '17_Bug_Fitment',
+    'Fitment': '17_Bug_Fitment',
 }
 
 
@@ -51,24 +53,35 @@ def _sheet_from_df(wb: Workbook, name: str, df: pd.DataFrame) -> None:
 
 
 def _finding_confidence(f: Finding) -> str:
+    if getattr(f, 'confidence', ''):
+        return str(f.confidence)
     if isinstance(f.data, dict):
         return str(f.data.get('confidence') or 'Media')
     return 'Media'
 
 
 def _finding_evidence(f: Finding) -> str:
+    if getattr(f, 'evidence_tecnica', ''):
+        return str(f.evidence_tecnica)
     if isinstance(f.data, dict) and f.data.get('evidenza_tecnica'):
         return str(f.data['evidenza_tecnica'])
     return f'category={f.category}; severity={f.severity}; url={f.url}'
 
 
 def _finding_discovered_from(f: Finding) -> str:
+    if getattr(f, 'discovered_from', ''):
+        return str(f.discovered_from)
     if isinstance(f.data, dict):
         return str(f.data.get('discovered_from') or '')
     return ''
 
 
 def _finding_crawl_depth(f: Finding) -> int:
+    if getattr(f, 'crawl_depth', None) is not None:
+        try:
+            return int(f.crawl_depth)
+        except Exception:
+            pass
     if isinstance(f.data, dict):
         try:
             return int(f.data.get('crawl_depth') or 0)
@@ -119,6 +132,8 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
             'tipo_pagina': f.page_type,
             'pagina_trovata_da': _finding_discovered_from(f),
             'crawl_depth': _finding_crawl_depth(f),
+            'fitment_tipo': getattr(f, 'fitment_tipo', '') or (f.data.get('fitment_tipo', '') if isinstance(f.data, dict) else ''),
+            'fitment_step': getattr(f, 'fitment_step', '') or (f.data.get('fitment_step', '') if isinstance(f.data, dict) else ''),
             'fingerprint': f.fingerprint,
             'stato_settimanale': 'new' if f.fingerprint in diff['new'] else 'persistent' if f.fingerprint in diff['persistent'] else '',
         }
@@ -208,7 +223,7 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
 
     build_info_df = pd.DataFrame(
         [
-            {'chiave': 'build_version', 'valore': 'V4_20260331'},
+            {'chiave': 'build_version', 'valore': 'V5_20260331'},
             {'chiave': 'generated_at_utc', 'valore': datetime.utcnow().isoformat(timespec='seconds')},
             {'chiave': 'run_date', 'valore': run_date},
             {'chiave': 'pages_checked', 'valore': len(pages)},

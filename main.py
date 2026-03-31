@@ -5,21 +5,24 @@ import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
-from audit_engine.config_loader import load_sites
+from audit_engine.config_loader import load_fitment_cases, load_sites
 from audit_engine.crawler import crawl_sites
+from audit_engine.fitment import run_fitment_checks
 from audit_engine.reporting import build_excel, build_markdown_summary
 from audit_engine.rules import run_rules
 from audit_engine.storage import Storage
 
 
-BUILD_VERSION = 'V4_20260331'
+BUILD_VERSION = 'V5_20260331'
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Pirelli weekly audit MVP V4')
+    parser = argparse.ArgumentParser(description='Pirelli weekly audit MVP V5')
     parser.add_argument('--config', default='config/sites.yaml')
+    parser.add_argument('--fitment-config', default='config/fitment_test_cases.yaml')
     parser.add_argument('--db', default='outputs/audit_history_v4.db')
     parser.add_argument('--output-dir', default='outputs')
+    parser.add_argument('--skip-fitment', action='store_true')
     return parser.parse_args()
 
 
@@ -30,6 +33,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     sites = load_sites(args.config)
+    fitment_cases = {} if args.skip_fitment else load_fitment_cases(args.fitment_config)
     storage = Storage(args.db)
     started = datetime.now(timezone.utc)
     run_date = started.date().isoformat()
@@ -38,6 +42,9 @@ def main() -> int:
     try:
         pages = asyncio.run(crawl_sites(sites))
         findings = run_rules(pages)
+        if fitment_cases:
+            findings.extend(asyncio.run(run_fitment_checks(sites, fitment_cases)))
+
         storage.save_pages(run_id, pages)
         storage.save_findings(run_id, findings)
         diff = storage.diff_findings(run_id)
