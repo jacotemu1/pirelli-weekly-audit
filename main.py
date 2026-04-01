@@ -40,10 +40,21 @@ def main() -> int:
     run_id = storage.create_run(run_date=run_date, started_at=started.isoformat())
 
     try:
+        print(f'[RUN] start markets={len(sites)} fitment_enabled={not args.skip_fitment}', flush=True)
         pages = asyncio.run(crawl_sites(sites))
+        print(f'[RUN] crawl done pages={len(pages)}', flush=True)
         findings = run_rules(pages)
+        print(f'[RUN] rules done findings={len(findings)}', flush=True)
         if fitment_cases:
-            findings.extend(asyncio.run(run_fitment_checks(sites, fitment_cases)))
+            print(f'[RUN] fitment start markets_with_cases={len(fitment_cases)}', flush=True)
+            try:
+                fitment_findings = asyncio.run(run_fitment_checks(sites, fitment_cases))
+                findings.extend(fitment_findings)
+                print(f'[RUN] fitment done findings={len(fitment_findings)}', flush=True)
+            except Exception as fitment_exc:  # noqa: BLE001
+                print(f'[RUN] fitment failed-soft: {fitment_exc}', flush=True)
+        else:
+            print('[RUN] fitment skipped: no cases loaded', flush=True)
 
         storage.save_pages(run_id, pages)
         storage.save_findings(run_id, findings)

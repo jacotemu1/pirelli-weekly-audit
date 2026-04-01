@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
@@ -29,6 +30,16 @@ BLOCKING_OVERLAY_SELECTORS = (
     '[class*="overlay" i]',
     '[role="dialog"]',
 )
+FITMENT_NAV_TIMEOUT_MS = int(os.getenv('PIRELLI_FITMENT_NAV_TIMEOUT_MS', '25000'))
+FITMENT_ENTRY_TIMEOUT_MS = int(os.getenv('PIRELLI_FITMENT_ENTRY_TIMEOUT_MS', '3500'))
+FITMENT_CLICK_TIMEOUT_MS = int(os.getenv('PIRELLI_FITMENT_CLICK_TIMEOUT_MS', '4500'))
+FITMENT_POST_CLICK_WAIT_MS = int(os.getenv('PIRELLI_FITMENT_POST_CLICK_WAIT_MS', '1200'))
+FITMENT_MARKET_BUDGET_SEC = int(os.getenv('PIRELLI_FITMENT_MARKET_BUDGET_SEC', '90'))
+FITMENT_JOURNEY_TIMEOUT_SEC = int(os.getenv('PIRELLI_FITMENT_JOURNEY_TIMEOUT_SEC', '35'))
+
+
+def _fitment_log(message: str) -> None:
+    print(f'[FITMENT] {message}', flush=True)
 
 
 def _mk_finding(
@@ -79,7 +90,7 @@ async def _find_fitment_entry(page: Page, fitment_type: str) -> str | None:
     for label in labels:
         locator = page.locator(f'a:has-text("{label}"), button:has-text("{label}"), [role="button"]:has-text("{label}")').first
         try:
-            if await locator.count() > 0:
+            if await asyncio.wait_for(locator.count(), timeout=FITMENT_ENTRY_TIMEOUT_MS / 1000) > 0:
                 return label
         except Exception:
             continue
@@ -118,7 +129,7 @@ async def _dismiss_cookie_overlay(page: Page) -> None:
         pass
 
 
-async def _safe_click(page: Page, locator, timeout_ms: int = 5000) -> tuple[bool, str]:
+async def _safe_click(page: Page, locator, timeout_ms: int = FITMENT_CLICK_TIMEOUT_MS) -> tuple[bool, str]:
     try:
         await locator.scroll_into_view_if_needed(timeout=1500)
     except Exception:
@@ -126,18 +137,18 @@ async def _safe_click(page: Page, locator, timeout_ms: int = 5000) -> tuple[bool
 
     try:
         await locator.click(timeout=timeout_ms)
-        await page.wait_for_timeout(700)
+        await page.wait_for_timeout(min(timeout_ms, FITMENT_POST_CLICK_WAIT_MS))
         return True, 'standard_click'
     except Exception as first_exc:  # noqa: BLE001
         await _dismiss_cookie_overlay(page)
         try:
             await locator.click(timeout=max(2500, timeout_ms - 1000))
-            await page.wait_for_timeout(700)
+            await page.wait_for_timeout(min(timeout_ms, FITMENT_POST_CLICK_WAIT_MS))
             return True, 'retry_click'
         except Exception as second_exc:  # noqa: BLE001
             try:
                 await locator.click(timeout=2200, force=True)
-                await page.wait_for_timeout(700)
+                await page.wait_for_timeout(min(timeout_ms, FITMENT_POST_CLICK_WAIT_MS))
                 return True, 'force_click'
             except Exception as third_exc:  # noqa: BLE001
                 return False, f'click1={first_exc}; click2={second_exc}; click3={third_exc}'
@@ -157,8 +168,6 @@ async def _find_blocking_overlay(page: Page) -> str:
 async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment_type: str) -> list[Finding]:
     findings: list[Finding] = []
     await _dismiss_cookie_overlay(page)
-async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment_type: str) -> list[Finding]:
-    findings: list[Finding] = []
     entry_label = await _find_fitment_entry(page, fitment_type)
     current_url = page.url or case.market_url
 
@@ -181,7 +190,7 @@ async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment
         return findings
 
     entry = page.locator(f'a:has-text("{entry_label}"), button:has-text("{entry_label}"), [role="button"]:has-text("{entry_label}")').first
-    click_ok, click_mode = await _safe_click(page, entry, timeout_ms=5000)
+    click_ok, click_mode = await _safe_click(page, entry, timeout_ms=FITMENT_CLICK_TIMEOUT_MS)
     if not click_ok:
         blocking_overlay = await _find_blocking_overlay(page)
         findings.append(
@@ -224,6 +233,22 @@ async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment
                 'post_click_loading',
             )
         )
+    if has_spinner and not has_next_step:
+        findings.append(
+            _mk_finding(
+                site,
+                page.url or current_url,
+                'Media',
+                'Spinner fitment non termina',
+                'Il widget fitment mostra loading persistente senza avanzare al passo successivo.',
+                'Il journey può restare bloccato e aumentare l’abbandono utente.',
+                'Introdurre timeout frontend e fallback UX quando le API fitment non rispondono.',
+                f'fitment_type={fitment_type}; spinner=true; next_step={has_next_step}; no_results={has_no_results}',
+                'Media',
+                fitment_type,
+                'spinner_timeout',
+            )
+        )
 
     if has_no_results and not has_explanation:
         findings.append(
@@ -239,6 +264,22 @@ async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment
                 'Media',
                 fitment_type,
                 'no_results_message',
+            )
+        )
+    if not has_next_step and not has_no_results and not has_spinner:
+        findings.append(
+            _mk_finding(
+                site,
+                page.url or current_url,
+                'Media',
+                'Risultati fitment non visualizzati',
+                'Dopo l’ingresso fitment non sono stati rilevati né step utili né risultati visibili.',
+                'Il funnel risulta ambiguo e rischia di interrompersi senza feedback chiaro.',
+                'Verificare rendering del widget e messaggi di stato per gli step intermedi.',
+                f'fitment_type={fitment_type}; next_step={has_next_step}; no_results={has_no_results}; spinner={has_spinner}',
+                'Media',
+                fitment_type,
+                'results_not_visible',
             )
         )
 
@@ -346,17 +387,79 @@ async def run_fitment_checks(sites: list[Site], cases: dict[str, FitmentCase]) -
 
         sem = asyncio.Semaphore(2)
 
-        async def run_one(site: Site) -> None:
+        async def run_one(site: Site, index: int, total: int) -> None:
             case = cases.get(site.code.upper())
             if not case or not case.market_url or not case.expected_types:
                 return
             async with sem:
+                _fitment_log(f'market start: {site.code} ({index}/{total})')
                 page = await context.new_page()
                 try:
-                    await page.goto(case.market_url, wait_until='domcontentloaded', timeout=45000)
-                    await page.wait_for_timeout(1200)
-                    for fitment_type in case.expected_types[:2]:
-                        findings.extend(await _check_fitment_type(site, page, case, fitment_type))
+                    await page.goto(case.market_url, wait_until='domcontentloaded', timeout=FITMENT_NAV_TIMEOUT_MS)
+                    await page.wait_for_timeout(800)
+
+                    async def run_market_journeys() -> None:
+                        for fitment_type in case.expected_types[:2]:
+                            _fitment_log(f'journey start: {site.code} {fitment_type}')
+                            try:
+                                journey_findings = await asyncio.wait_for(
+                                    _check_fitment_type(site, page, case, fitment_type),
+                                    timeout=FITMENT_JOURNEY_TIMEOUT_SEC,
+                                )
+                                findings.extend(journey_findings)
+                            except asyncio.TimeoutError:
+                                _fitment_log(f'timeout on {site.code} {fitment_type}')
+                                findings.append(
+                                    _mk_finding(
+                                        site,
+                                        page.url or case.market_url,
+                                        'Media',
+                                        'Timeout journey fitment',
+                                        'Il journey fitment ha superato il timeout operativo previsto.',
+                                        'Riduce la copertura del controllo automatico su un flusso chiave.',
+                                        'Verificare performance JS/API e stabilità del widget nel mercato.',
+                                        f'fitment_type={fitment_type}; timeout_sec={FITMENT_JOURNEY_TIMEOUT_SEC}',
+                                        'Alta',
+                                        fitment_type,
+                                        'journey_timeout',
+                                    )
+                                )
+                            except Exception as journey_exc:  # noqa: BLE001
+                                findings.append(
+                                    _mk_finding(
+                                        site,
+                                        page.url or case.market_url,
+                                        'Media',
+                                        'Errore tecnico nel runner fitment',
+                                        'Il runner del journey fitment ha generato un errore non bloccante.',
+                                        'Riduce la copertura del controllo, ma la run globale continua.',
+                                        'Verificare selettori, overlay e disponibilità elementi fitment nel mercato.',
+                                        f'fitment_type={fitment_type}; journey_error={journey_exc}',
+                                        'Media',
+                                        fitment_type,
+                                        'journey_error',
+                                    )
+                                )
+
+                    try:
+                        await asyncio.wait_for(run_market_journeys(), timeout=FITMENT_MARKET_BUDGET_SEC)
+                    except asyncio.TimeoutError:
+                        _fitment_log(f'market skipped after max budget: {site.code}')
+                        findings.append(
+                            _mk_finding(
+                                site,
+                                page.url or case.market_url,
+                                'Media',
+                                'Fitment interrotto per timeout complessivo',
+                                'Il budget massimo di tempo per il fitment del mercato è stato superato.',
+                                'La copertura fitment del mercato risulta parziale nella run corrente.',
+                                'Ridurre complessità journey o aumentare budget solo se necessario.',
+                                f'market_budget_sec={FITMENT_MARKET_BUDGET_SEC}; site={site.code}',
+                                'Alta',
+                                'generic',
+                                'market_budget',
+                            )
+                        )
                 except Exception as exc:  # noqa: BLE001
                     findings.append(
                         _mk_finding(
@@ -375,8 +478,10 @@ async def run_fitment_checks(sites: list[Site], cases: dict[str, FitmentCase]) -
                     )
                 finally:
                     await page.close()
+                    market_fitment_findings = len([f for f in findings if f.site_code == site.code and f.page_type == 'fitment'])
+                    _fitment_log(f'market done: {site.code} findings={market_fitment_findings}')
 
-        await asyncio.gather(*[run_one(site) for site in sites])
+        await asyncio.gather(*[run_one(site, idx, len(sites)) for idx, site in enumerate(sites, start=1)], return_exceptions=True)
         await context.close()
         await browser.close()
 
