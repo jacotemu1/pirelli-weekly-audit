@@ -38,6 +38,8 @@ def _auto_width(ws) -> None:
 
 
 def _sheet_from_df(wb: Workbook, name: str, df: pd.DataFrame) -> None:
+    if name in wb.sheetnames:
+        del wb[name]
     ws = wb.create_sheet(name)
     if df.empty:
         ws['A1'] = 'No data'
@@ -214,9 +216,18 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
     _sheet_from_df(wb, '01_Priorita', priorita_df)
     _sheet_from_df(wb, '02_Diff_settimanale', diff_df)
     _sheet_from_df(wb, '10_Bug_Tutti', bugs_df)
+    created_sheet_names: set[str] = set()
     for category, sheet_name in CATEGORY_SHEETS.items():
-        category_df = bugs_df[bugs_df['area_bug'] == category].copy() if not bugs_df.empty else pd.DataFrame()
+        if sheet_name in created_sheet_names:
+            continue
+        if bugs_df.empty:
+            category_df = pd.DataFrame()
+        elif category == 'fitment':
+            category_df = bugs_df[bugs_df['area_bug'].astype(str).str.lower() == 'fitment'].copy()
+        else:
+            category_df = bugs_df[bugs_df['area_bug'] == category].copy()
         _sheet_from_df(wb, sheet_name, category_df)
+        created_sheet_names.add(sheet_name)
     _sheet_from_df(wb, '90_Pagine_Crawlate', pages_sheet_df)
     _sheet_from_df(wb, '91_Coverage', coverage_df)
     _sheet_from_df(wb, '99_Raw_Tecnico', raw_df)

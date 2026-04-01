@@ -14,6 +14,21 @@ FITMENT_LABELS = {
     'plate': ['plate', 'targa', 'license'],
 }
 LOCALIZATION_MISMATCH_MARKERS = ('where are you?', 'search by plate', 'find your dealer')
+COOKIE_BUTTON_HINTS = (
+    'accept', 'agree', 'ok', 'consent', 'allow all',
+    'accetta', 'accetto', 'accettare', 'consenti',
+    'j\'accepte', 'aceptar', 'zustimmen'
+)
+OVERLAY_CLOSE_HINTS = ('close', 'chiudi', 'dismiss', 'x')
+BLOCKING_OVERLAY_SELECTORS = (
+    '[id*="cookie" i]',
+    '[class*="cookie" i]',
+    '[id*="consent" i]',
+    '[class*="consent" i]',
+    '[id*="overlay" i]',
+    '[class*="overlay" i]',
+    '[role="dialog"]',
+)
 
 
 def _mk_finding(
@@ -71,6 +86,77 @@ async def _find_fitment_entry(page: Page, fitment_type: str) -> str | None:
     return None
 
 
+async def _dismiss_cookie_overlay(page: Page) -> None:
+    # best effort: do not fail test if banner is not present
+    try:
+        for hint in COOKIE_BUTTON_HINTS:
+            btn = page.locator(
+                f'button:has-text("{hint}"), [role="button"]:has-text("{hint}"), '
+                f'input[type="button"][value*="{hint}"], input[type="submit"][value*="{hint}"]'
+            ).first
+            if await btn.count() > 0:
+                try:
+                    await btn.click(timeout=2000)
+                    await page.wait_for_timeout(400)
+                    return
+                except Exception:
+                    pass
+
+        # common consent/overlay close targets
+        for hint in OVERLAY_CLOSE_HINTS:
+            close_btn = page.locator(
+                f'button[aria-label*="{hint}" i], button:has-text("{hint}"), '
+                f'[role="button"][aria-label*="{hint}" i]'
+            ).first
+            if await close_btn.count() > 0:
+                try:
+                    await close_btn.click(timeout=1500)
+                    await page.wait_for_timeout(300)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+async def _safe_click(page: Page, locator, timeout_ms: int = 5000) -> tuple[bool, str]:
+    try:
+        await locator.scroll_into_view_if_needed(timeout=1500)
+    except Exception:
+        pass
+
+    try:
+        await locator.click(timeout=timeout_ms)
+        await page.wait_for_timeout(700)
+        return True, 'standard_click'
+    except Exception as first_exc:  # noqa: BLE001
+        await _dismiss_cookie_overlay(page)
+        try:
+            await locator.click(timeout=max(2500, timeout_ms - 1000))
+            await page.wait_for_timeout(700)
+            return True, 'retry_click'
+        except Exception as second_exc:  # noqa: BLE001
+            try:
+                await locator.click(timeout=2200, force=True)
+                await page.wait_for_timeout(700)
+                return True, 'force_click'
+            except Exception as third_exc:  # noqa: BLE001
+                return False, f'click1={first_exc}; click2={second_exc}; click3={third_exc}'
+
+
+async def _find_blocking_overlay(page: Page) -> str:
+    for selector in BLOCKING_OVERLAY_SELECTORS:
+        try:
+            loc = page.locator(selector).first
+            if await loc.count() > 0 and await loc.is_visible():
+                return selector
+        except Exception:
+            continue
+    return ''
+
+
+async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment_type: str) -> list[Finding]:
+    findings: list[Finding] = []
+    await _dismiss_cookie_overlay(page)
 async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment_type: str) -> list[Finding]:
     findings: list[Finding] = []
     entry_label = await _find_fitment_entry(page, fitment_type)
@@ -95,10 +181,9 @@ async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment
         return findings
 
     entry = page.locator(f'a:has-text("{entry_label}"), button:has-text("{entry_label}"), [role="button"]:has-text("{entry_label}")').first
-    try:
-        await entry.click(timeout=5000)
-        await page.wait_for_timeout(1200)
-    except Exception as exc:  # noqa: BLE001
+    click_ok, click_mode = await _safe_click(page, entry, timeout_ms=5000)
+    if not click_ok:
+        blocking_overlay = await _find_blocking_overlay(page)
         findings.append(
             _mk_finding(
                 site,
@@ -107,8 +192,8 @@ async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment
                 'CTA fitment non cliccabile',
                 'Il punto di ingresso fitment è visibile ma non è cliccabile in modo stabile.',
                 'Blocca il funnel di selezione pneumatici e riduce conversione.',
-                'Verificare overlay, z-index, listener JS e comportamento responsive della CTA fitment.',
-                f'click_error={exc}; fitment_type={fitment_type}; label={entry_label}',
+                'Verificare overlay/cookie banner, z-index e listener JS della CTA fitment.',
+                f'click_error={click_mode}; fitment_type={fitment_type}; label={entry_label}; blocking_overlay={blocking_overlay}',
                 'Alta',
                 fitment_type,
                 'click_entry',

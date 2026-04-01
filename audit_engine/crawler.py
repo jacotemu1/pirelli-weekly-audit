@@ -21,6 +21,8 @@ IMPORTANT_HINTS = ('catalog', 'catalogo', 'catalogue', 'dealer', 'rivenditor', '
 IGNORED_DOMAINS = ('facebook.com', 'instagram.com', 'linkedin.com', 'youtube.com', 'tiktok.com', 'twitter.com', 'x.com')
 MAX_PAGES_PER_SITE = int(os.getenv('PIRELLI_MAX_PAGES_PER_SITE', '420'))
 MAX_CRAWL_DEPTH = int(os.getenv('PIRELLI_MAX_CRAWL_DEPTH', '7'))
+ONCLICK_URL_PATTERN = re.compile(r"""(?:location\.href|window\.open)\(['"]([^'"]+)['"]\)""")
+INLINE_URL_PATTERN = re.compile(r"""["'](https?://[^"'\s]+|/[^"'\s]+)["']""")
 
 
 def _normalize_url(url: str) -> str:
@@ -110,10 +112,10 @@ def _extract_links_from_html(base_url: str, html: str) -> list[str]:
             if value:
                 candidates.add(_normalize_url(urljoin(base_url, value)))
 
-    for onclick_match in re.findall(r"(?:location\\.href|window\\.open)\\(['\\\"]([^'\\\"]+)['\\\"]", html):
+    for onclick_match in ONCLICK_URL_PATTERN.findall(html):
         candidates.add(_normalize_url(urljoin(base_url, onclick_match)))
 
-    for match in re.findall(r'["\\\'](https?://[^"\\\'\\s]+|/[^"\\\'\\s]+)["\\\']', html):
+    for match in INLINE_URL_PATTERN.findall(html):
         candidates.add(_normalize_url(urljoin(base_url, match)))
     return sorted(candidates)
 
@@ -156,7 +158,30 @@ async def _fetch_page(context: BrowserContext, site: Site, page_type: str, url: 
         meta_el = soup.find('meta', attrs={'name': 'description'})
         meta_description = meta_el.get('content', '') if meta_el else ''
         text = soup.get_text('\n', strip=True)
-        links = _extract_links_from_html(final_url, html)
+        try:
+            links = _extract_links_from_html(final_url, html)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f'link_extract_error: {exc}')
+            links = []
+
+        # Include only real links found in rendered DOM (no synthetic URL building).
+        try:
+            dom_links = await page.eval_on_selector_all(
+                'a[href], link[href], area[href], iframe[src], form[action], [data-href], [data-url], [data-link], [data-target]',
+                """(els) => els
+                    .map((el) => el.getAttribute('href') || el.getAttribute('src') || el.getAttribute('action')
+                        || el.getAttribute('data-href') || el.getAttribute('data-url')
+                        || el.getAttribute('data-link') || el.getAttribute('data-target'))
+                    .filter(Boolean)""",
+            )
+            for raw in dom_links:
+                raw_str = str(raw).strip()
+                if not raw_str or raw_str.startswith(('#', 'javascript:', 'mailto:', 'tel:')):
+                    continue
+                links.append(_normalize_url(urljoin(final_url, raw_str)))
+            links = sorted(set(links))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f'dom_link_extract_error: {exc}')
     except Exception as exc:  # noqa: BLE001
         errors.append(f'parse_error: {exc}')
 
