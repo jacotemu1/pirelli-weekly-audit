@@ -35,9 +35,12 @@ jobs:
 
       - name: Run script
         env:
-          PIRELLI_MAX_PAGES_PER_SITE: '220'
-          PIRELLI_MAX_CRAWL_DEPTH: '5'
-        run: python main.py --config config/sites.yaml --db outputs/audit_history_v4.db --output-dir outputs
+          PYTHONUNBUFFERED: '1'
+          PIRELLI_MAX_PAGES_PER_SITE: '300'
+          PIRELLI_MAX_CRAWL_DEPTH: '6'
+          PIRELLI_FITMENT_MARKET_BUDGET_SEC: '90'
+          PIRELLI_FITMENT_JOURNEY_TIMEOUT_SEC: '35'
+        run: python main.py --config config/sites.yaml --fitment-config config/fitment_test_cases.yaml --db outputs/audit_history_v4.db --output-dir outputs
 
       - name: Upload output
         uses: actions/upload-artifact@v4
