@@ -21,6 +21,7 @@ CATEGORY_SHEETS = {
     'accessibility': '15_Bug_Accessibilita',
     'cro': '16_Bug_CRO',
     'fitment': '17_Bug_Fitment',
+    'Fitment': '17_Bug_Fitment',
 }
 
 

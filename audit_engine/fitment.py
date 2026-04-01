@@ -157,6 +157,8 @@ async def _find_blocking_overlay(page: Page) -> str:
 async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment_type: str) -> list[Finding]:
     findings: list[Finding] = []
     await _dismiss_cookie_overlay(page)
+async def _check_fitment_type(site: Site, page: Page, case: FitmentCase, fitment_type: str) -> list[Finding]:
+    findings: list[Finding] = []
     entry_label = await _find_fitment_entry(page, fitment_type)
     current_url = page.url or case.market_url
 
