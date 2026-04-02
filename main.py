@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from audit_engine.storage import Storage
 
 
 BUILD_VERSION = 'V5_20260331'
+FITMENT_TOTAL_BUDGET_SEC = int(os.getenv('PIRELLI_FITMENT_TOTAL_BUDGET_SEC', '1200'))
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,9 +50,16 @@ def main() -> int:
         if fitment_cases:
             print(f'[RUN] fitment start markets_with_cases={len(fitment_cases)}', flush=True)
             try:
-                fitment_findings = asyncio.run(run_fitment_checks(sites, fitment_cases))
+                fitment_findings = asyncio.run(
+                    asyncio.wait_for(
+                        run_fitment_checks(sites, fitment_cases),
+                        timeout=FITMENT_TOTAL_BUDGET_SEC,
+                    )
+                )
                 findings.extend(fitment_findings)
-                print(f'[RUN] fitment done findings={len(fitment_findings)}', flush=True)
+                print(f'[RUN] fitment done total_findings={len(fitment_findings)}', flush=True)
+            except asyncio.TimeoutError:
+                print(f'[RUN] fitment total budget exceeded ({FITMENT_TOTAL_BUDGET_SEC}s), continuing without blocking run', flush=True)
             except Exception as fitment_exc:  # noqa: BLE001
                 print(f'[RUN] fitment failed-soft: {fitment_exc}', flush=True)
         else:

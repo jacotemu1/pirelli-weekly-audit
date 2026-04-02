@@ -34,8 +34,9 @@ FITMENT_NAV_TIMEOUT_MS = int(os.getenv('PIRELLI_FITMENT_NAV_TIMEOUT_MS', '25000'
 FITMENT_ENTRY_TIMEOUT_MS = int(os.getenv('PIRELLI_FITMENT_ENTRY_TIMEOUT_MS', '3500'))
 FITMENT_CLICK_TIMEOUT_MS = int(os.getenv('PIRELLI_FITMENT_CLICK_TIMEOUT_MS', '4500'))
 FITMENT_POST_CLICK_WAIT_MS = int(os.getenv('PIRELLI_FITMENT_POST_CLICK_WAIT_MS', '1200'))
-FITMENT_MARKET_BUDGET_SEC = int(os.getenv('PIRELLI_FITMENT_MARKET_BUDGET_SEC', '90'))
-FITMENT_JOURNEY_TIMEOUT_SEC = int(os.getenv('PIRELLI_FITMENT_JOURNEY_TIMEOUT_SEC', '35'))
+FITMENT_MARKET_BUDGET_SEC = int(os.getenv('PIRELLI_FITMENT_MARKET_BUDGET_SEC', '50'))
+FITMENT_JOURNEY_TIMEOUT_SEC = int(os.getenv('PIRELLI_FITMENT_JOURNEY_TIMEOUT_SEC', '22'))
+FITMENT_GLOBAL_BUDGET_SEC = int(os.getenv('PIRELLI_FITMENT_GLOBAL_BUDGET_SEC', os.getenv('PIRELLI_FITMENT_TOTAL_BUDGET_SEC', '900')))
 
 
 def _fitment_log(message: str) -> None:
@@ -384,104 +385,109 @@ async def run_fitment_checks(sites: list[Site], cases: dict[str, FitmentCase]) -
     async with async_playwright() as p:
         browser: Browser = await p.chromium.launch(headless=True)
         context: BrowserContext = await browser.new_context(ignore_https_errors=True)
+        loop = asyncio.get_running_loop()
+        global_deadline = loop.time() + FITMENT_GLOBAL_BUDGET_SEC
 
-        sem = asyncio.Semaphore(2)
-
-        async def run_one(site: Site, index: int, total: int) -> None:
-            case = cases.get(site.code.upper())
-            if not case or not case.market_url or not case.expected_types:
-                return
-            async with sem:
-                _fitment_log(f'market start: {site.code} ({index}/{total})')
-                page = await context.new_page()
-                try:
-                    await page.goto(case.market_url, wait_until='domcontentloaded', timeout=FITMENT_NAV_TIMEOUT_MS)
-                    await page.wait_for_timeout(800)
-
-                    async def run_market_journeys() -> None:
-                        for fitment_type in case.expected_types[:2]:
-                            _fitment_log(f'journey start: {site.code} {fitment_type}')
-                            try:
-                                journey_findings = await asyncio.wait_for(
-                                    _check_fitment_type(site, page, case, fitment_type),
-                                    timeout=FITMENT_JOURNEY_TIMEOUT_SEC,
-                                )
-                                findings.extend(journey_findings)
-                            except asyncio.TimeoutError:
-                                _fitment_log(f'timeout on {site.code} {fitment_type}')
-                                findings.append(
-                                    _mk_finding(
-                                        site,
-                                        page.url or case.market_url,
-                                        'Media',
-                                        'Timeout journey fitment',
-                                        'Il journey fitment ha superato il timeout operativo previsto.',
-                                        'Riduce la copertura del controllo automatico su un flusso chiave.',
-                                        'Verificare performance JS/API e stabilità del widget nel mercato.',
-                                        f'fitment_type={fitment_type}; timeout_sec={FITMENT_JOURNEY_TIMEOUT_SEC}',
-                                        'Alta',
-                                        fitment_type,
-                                        'journey_timeout',
-                                    )
-                                )
-                            except Exception as journey_exc:  # noqa: BLE001
-                                findings.append(
-                                    _mk_finding(
-                                        site,
-                                        page.url or case.market_url,
-                                        'Media',
-                                        'Errore tecnico nel runner fitment',
-                                        'Il runner del journey fitment ha generato un errore non bloccante.',
-                                        'Riduce la copertura del controllo, ma la run globale continua.',
-                                        'Verificare selettori, overlay e disponibilità elementi fitment nel mercato.',
-                                        f'fitment_type={fitment_type}; journey_error={journey_exc}',
-                                        'Media',
-                                        fitment_type,
-                                        'journey_error',
-                                    )
-                                )
-
+        async def _run_market(site: Site, case: FitmentCase) -> None:
+            page = await context.new_page()
+            try:
+                await page.goto(case.market_url, wait_until='domcontentloaded', timeout=FITMENT_NAV_TIMEOUT_MS)
+                await page.wait_for_timeout(800)
+                for fitment_type in case.expected_types[:2]:
+                    _fitment_log(f'journey start: {site.code} {fitment_type}')
                     try:
-                        await asyncio.wait_for(run_market_journeys(), timeout=FITMENT_MARKET_BUDGET_SEC)
+                        journey_findings = await asyncio.wait_for(
+                            _check_fitment_type(site, page, case, fitment_type),
+                            timeout=FITMENT_JOURNEY_TIMEOUT_SEC,
+                        )
+                        findings.extend(journey_findings)
                     except asyncio.TimeoutError:
-                        _fitment_log(f'market skipped after max budget: {site.code}')
+                        _fitment_log(f'journey timeout: {site.code} {fitment_type}')
                         findings.append(
                             _mk_finding(
                                 site,
                                 page.url or case.market_url,
                                 'Media',
-                                'Fitment interrotto per timeout complessivo',
-                                'Il budget massimo di tempo per il fitment del mercato è stato superato.',
-                                'La copertura fitment del mercato risulta parziale nella run corrente.',
-                                'Ridurre complessità journey o aumentare budget solo se necessario.',
-                                f'market_budget_sec={FITMENT_MARKET_BUDGET_SEC}; site={site.code}',
+                                'Timeout journey fitment',
+                                'Il journey fitment ha superato il timeout operativo previsto.',
+                                'Riduce la copertura del controllo automatico su un flusso chiave.',
+                                'Verificare performance JS/API e stabilità del widget nel mercato.',
+                                f'fitment_type={fitment_type}; timeout_sec={FITMENT_JOURNEY_TIMEOUT_SEC}',
                                 'Alta',
-                                'generic',
-                                'market_budget',
+                                fitment_type,
+                                'journey_timeout',
                             )
                         )
-                except Exception as exc:  # noqa: BLE001
-                    findings.append(
-                        _mk_finding(
-                            site,
-                            case.market_url,
-                            'Alta',
-                            'Errore tecnico durante test fitment',
-                            'Il test browser-based fitment non è riuscito a completarsi.',
-                            'Riduce la copertura dei journey interattivi ad alto impatto business.',
-                            'Verificare disponibilità pagina, blocchi bot e stabilità dei componenti fitment.',
-                            f'fitment_runner_error={exc}',
-                            'Media',
-                            'generic',
-                            'runner',
+                    except Exception as journey_exc:  # noqa: BLE001
+                        findings.append(
+                            _mk_finding(
+                                site,
+                                page.url or case.market_url,
+                                'Media',
+                                'Errore tecnico nel runner fitment',
+                                'Il runner del journey fitment ha generato un errore non bloccante.',
+                                'Riduce la copertura del controllo, ma la run globale continua.',
+                                'Verificare selettori, overlay e disponibilità elementi fitment nel mercato.',
+                                f'fitment_type={fitment_type}; journey_error={journey_exc}',
+                                'Media',
+                                fitment_type,
+                                'journey_error',
+                            )
                         )
-                    )
-                finally:
-                    await page.close()
-                    market_fitment_findings = len([f for f in findings if f.site_code == site.code and f.page_type == 'fitment'])
-                    _fitment_log(f'market done: {site.code} findings={market_fitment_findings}')
+            finally:
+                await page.close()
 
-        await asyncio.gather(*[run_one(site, idx, len(sites)) for idx, site in enumerate(sites, start=1)], return_exceptions=True)
+        for index, site in enumerate(sites, start=1):
+            case = cases.get(site.code.upper())
+            if not case or not case.market_url or not case.expected_types:
+                continue
+
+            remaining_global = global_deadline - loop.time()
+            if remaining_global <= 0:
+                _fitment_log('global budget exceeded, stopping remaining fitment tasks')
+                break
+
+            market_timeout = min(FITMENT_MARKET_BUDGET_SEC, remaining_global)
+            _fitment_log(f'market start: {site.code} ({index}/{len(sites)})')
+            try:
+                await asyncio.wait_for(_run_market(site, case), timeout=market_timeout)
+            except asyncio.TimeoutError:
+                _fitment_log(f'market timeout: {site.code}')
+                findings.append(
+                    _mk_finding(
+                        site,
+                        case.market_url,
+                        'Media',
+                        'Fitment interrotto per timeout complessivo',
+                        'Il budget massimo di tempo per il fitment del mercato è stato superato.',
+                        'La copertura fitment del mercato risulta parziale nella run corrente.',
+                        'Ridurre complessità journey o aumentare budget solo se necessario.',
+                        f'market_budget_sec={FITMENT_MARKET_BUDGET_SEC}; site={site.code}',
+                        'Alta',
+                        'generic',
+                        'market_budget',
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                findings.append(
+                    _mk_finding(
+                        site,
+                        case.market_url,
+                        'Alta',
+                        'Errore tecnico durante test fitment',
+                        'Il test browser-based fitment non è riuscito a completarsi.',
+                        'Riduce la copertura dei journey interattivi ad alto impatto business.',
+                        'Verificare disponibilità pagina, blocchi bot e stabilità dei componenti fitment.',
+                        f'fitment_runner_error={exc}',
+                        'Media',
+                        'generic',
+                        'runner',
+                    )
+                )
+            finally:
+                market_fitment_findings = len([f for f in findings if f.site_code == site.code and f.page_type == 'fitment'])
+                _fitment_log(f'market done: {site.code} findings={market_fitment_findings}')
+
         await context.close()
         await browser.close()
 
