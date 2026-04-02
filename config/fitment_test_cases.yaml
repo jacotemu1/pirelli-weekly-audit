@@ -1,0 +1,28 @@
+cases:
+  - site_code: IT
+    market_url: https://www.pirelli.com/tyres/it-it/auto/home
+    expected_types: [vehicle, size]
+
+  - site_code: DE
+    market_url: https://www.pirelli.com/tyres/de-de/pkw/homepage
+    expected_types: [vehicle, size]
+
+  - site_code: UK
+    market_url: https://www.pirelli.com/tyres/en-gb/car/homepage
+    expected_types: [vehicle, size]
+
+  - site_code: US
+    market_url: https://www.pirelli.com/tires/en-us/car/homepage
+    expected_types: [vehicle, size, plate]
+
+  - site_code: FR
+    market_url: https://www.pirelli.com/tyres/fr-fr/voiture/home
+    expected_types: [vehicle, size]
+
+  - site_code: ES
+    market_url: https://www.pirelli.com/tyres/es-es/coche/home
+    expected_types: [vehicle, size]
+
+  - site_code: CA
+    market_url: https://www.pirelli.com/tires/en-ca/car/homepage
+    expected_types: [vehicle, size, plate]
