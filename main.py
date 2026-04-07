@@ -44,7 +44,8 @@ def main() -> int:
     try:
         print(f'[RUN] start markets={len(sites)} fitment_enabled={not args.skip_fitment}', flush=True)
         pages = asyncio.run(crawl_sites(sites))
-        print(f'[RUN] crawl done pages={len(pages)}', flush=True)
+        crawled_markets = len({p.site_code for p in pages})
+        print(f'[RUN] crawl done markets={crawled_markets} pages={len(pages)}', flush=True)
         findings = run_rules(pages)
         print(f'[RUN] rules done findings={len(findings)}', flush=True)
         if fitment_cases:

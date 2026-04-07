@@ -435,7 +435,10 @@ async def run_fitment_checks(sites: list[Site], cases: dict[str, FitmentCase]) -
                             )
                         )
             finally:
-                await page.close()
+                try:
+                    await page.close()
+                except Exception:
+                    pass
 
         for index, site in enumerate(sites, start=1):
             case = cases.get(site.code.upper())
@@ -488,7 +491,9 @@ async def run_fitment_checks(sites: list[Site], cases: dict[str, FitmentCase]) -
                 market_fitment_findings = len([f for f in findings if f.site_code == site.code and f.page_type == 'fitment'])
                 _fitment_log(f'market done: {site.code} findings={market_fitment_findings}')
 
-        await context.close()
-        await browser.close()
+        try:
+            await context.close()
+        finally:
+            await browser.close()
 
     return findings
