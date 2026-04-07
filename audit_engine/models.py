@@ -18,6 +18,14 @@ class Site:
     language: str
     base_url: str
     pages: list[SitePage]
+    allowed_prefixes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class FitmentCase:
+    site_code: str
+    market_url: str
+    expected_types: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -38,6 +46,9 @@ class PageResult:
     text: str
     links: list[str]
     meta_description: str
+    crawl_depth: int = 0
+    discovered_from: str = ''
+    screenshot_path: str = ''
     errors: list[str] = field(default_factory=list)
 
 
@@ -55,4 +66,11 @@ class Finding:
     impact: str
     suggested_fix: str
     fingerprint: str
+    evidence_tecnica: str = ''
+    confidence: str = 'Media'
+    discovered_from: str = ''
+    crawl_depth: int = 0
+    fitment_tipo: str = ''
+    fitment_step: str = ''
+    screenshot_path: str = ''
     data: dict[str, Any] = field(default_factory=dict)
