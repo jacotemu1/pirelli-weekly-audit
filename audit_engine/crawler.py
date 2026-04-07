@@ -21,8 +21,14 @@ IMPORTANT_HINTS = ('catalog', 'catalogo', 'catalogue', 'dealer', 'rivenditor', '
 IGNORED_DOMAINS = ('facebook.com', 'instagram.com', 'linkedin.com', 'youtube.com', 'tiktok.com', 'twitter.com', 'x.com')
 MAX_PAGES_PER_SITE = int(os.getenv('PIRELLI_MAX_PAGES_PER_SITE', '420'))
 MAX_CRAWL_DEPTH = int(os.getenv('PIRELLI_MAX_CRAWL_DEPTH', '7'))
+CRAWL_MARKET_BUDGET_SEC = int(os.getenv('PIRELLI_CRAWL_MARKET_BUDGET_SEC', '120'))
+CRAWL_TOTAL_BUDGET_SEC = int(os.getenv('PIRELLI_CRAWL_TOTAL_BUDGET_SEC', '1800'))
 ONCLICK_URL_PATTERN = re.compile(r"""(?:location\.href|window\.open)\(['"]([^'"]+)['"]\)""")
 INLINE_URL_PATTERN = re.compile(r"""["'](https?://[^"'\s]+|/[^"'\s]+)["']""")
+
+
+def _crawl_log(message: str) -> None:
+    print(f'[CRAWL] {message}', flush=True)
 
 
 def _normalize_url(url: str) -> str:
@@ -282,39 +288,80 @@ async def crawl_sites(sites: list[Site]) -> list[PageResult]:
     async with async_playwright() as p:
         browser: Browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(ignore_https_errors=True)
-        sem = asyncio.Semaphore(2)
-
-        async def run_one(site: Site) -> None:
-            async with sem:
-                try:
-                    results.extend(await _crawl_site(context, site))
-                except Exception as exc:  # noqa: BLE001
-                    # Prevent one market failure from aborting the whole weekly run.
-                    results.append(
-                        PageResult(
-                            site_code=site.code,
-                            country=site.country,
-                            region=site.region,
-                            language=site.language,
-                            url=site.base_url,
-                            page_type='home',
-                            final_url=site.base_url,
-                            status_code=None,
-                            title='',
-                            h1='',
-                            h2_count=0,
-                            canonical='',
-                            html='',
-                            text='',
-                            links=[],
-                            meta_description='',
-                            crawl_depth=0,
-                            discovered_from='seed_homepage',
-                            errors=[f'site_crawl_unhandled_error: {exc}'],
-                        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + CRAWL_TOTAL_BUDGET_SEC
+        for index, site in enumerate(sites, start=1):
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                _crawl_log('global timeout reached, stopping remaining markets')
+                break
+            _crawl_log(f'market start: {site.code} ({index}/{len(sites)})')
+            market_timeout = min(CRAWL_MARKET_BUDGET_SEC, remaining)
+            market_pages_before = len(results)
+            try:
+                site_results = await asyncio.wait_for(_crawl_site(context, site), timeout=market_timeout)
+                for page_idx, page_result in enumerate(site_results, start=1):
+                    _crawl_log(
+                        f'market page: {site.code} count={page_idx} depth={page_result.crawl_depth} '
+                        f'url={page_result.final_url or page_result.url}'
                     )
-
-        await asyncio.gather(*[run_one(site) for site in sites])
+                results.extend(site_results)
+                _crawl_log(f'market done: {site.code} pages={len(site_results)}')
+            except asyncio.TimeoutError:
+                _crawl_log(f'market timeout: {site.code}')
+                results.append(
+                    PageResult(
+                        site_code=site.code,
+                        country=site.country,
+                        region=site.region,
+                        language=site.language,
+                        url=site.base_url,
+                        page_type='home',
+                        final_url=site.base_url,
+                        status_code=None,
+                        title='',
+                        h1='',
+                        h2_count=0,
+                        canonical='',
+                        html='',
+                        text='',
+                        links=[],
+                        meta_description='',
+                        crawl_depth=0,
+                        discovered_from='seed_homepage',
+                        errors=[f'market_timeout: exceeded_{market_timeout:.1f}s'],
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                _crawl_log(f'market error: {site.code} {exc}')
+                # Prevent one market failure from aborting the whole weekly run.
+                results.append(
+                    PageResult(
+                        site_code=site.code,
+                        country=site.country,
+                        region=site.region,
+                        language=site.language,
+                        url=site.base_url,
+                        page_type='home',
+                        final_url=site.base_url,
+                        status_code=None,
+                        title='',
+                        h1='',
+                        h2_count=0,
+                        canonical='',
+                        html='',
+                        text='',
+                        links=[],
+                        meta_description='',
+                        crawl_depth=0,
+                        discovered_from='seed_homepage',
+                        errors=[f'site_crawl_unhandled_error: {exc}'],
+                    )
+                )
+            finally:
+                market_pages_after = len(results)
+                if market_pages_after == market_pages_before:
+                    _crawl_log(f'market done: {site.code} pages=0')
         await context.close()
         await browser.close()
     return results

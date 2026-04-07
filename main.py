@@ -34,15 +34,20 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    print(f'[RUN] start markets_config={args.config} fitment_enabled={not args.skip_fitment}', flush=True)
+    print('[RUN] loading sites config', flush=True)
     sites = load_sites(args.config)
+    print(f'[RUN] sites loaded count={len(sites)}', flush=True)
+    print('[RUN] loading fitment config', flush=True)
     fitment_cases = {} if args.skip_fitment else load_fitment_cases(args.fitment_config)
+    print(f'[RUN] fitment config loaded count={len(fitment_cases)}', flush=True)
     storage = Storage(args.db)
     started = datetime.now(timezone.utc)
     run_date = started.date().isoformat()
     run_id = storage.create_run(run_date=run_date, started_at=started.isoformat())
 
     try:
-        print(f'[RUN] start markets={len(sites)} fitment_enabled={not args.skip_fitment}', flush=True)
+        print('[RUN] crawl start', flush=True)
         pages = asyncio.run(crawl_sites(sites))
         crawled_markets = len({p.site_code for p in pages})
         print(f'[RUN] crawl done markets={crawled_markets} pages={len(pages)}', flush=True)
@@ -73,8 +78,10 @@ def main() -> int:
         stamp = started.strftime('%Y%m%d_%H%M%S')
         excel_path = output_dir / f'pirelli_weekly_audit_{stamp}.xlsx'
         md_path = output_dir / f'pirelli_weekly_summary_{stamp}.md'
+        print('[RUN] report generation start', flush=True)
         build_excel(excel_path, pages, findings, diff, run_date)
         build_markdown_summary(md_path, pages, findings, diff, run_date)
+        print('[RUN] report generation done', flush=True)
 
         finished = datetime.now(timezone.utc)
         storage.finish_run(
