@@ -157,6 +157,8 @@ async def _fetch_page(
     page = await context.new_page()
     errors: list[str] = []
     response = None
+    step_ts = asyncio.get_running_loop().time()
+    _crawl_log(f'open_page_start market={site.code} url={url}')
     try:
         response = await page.goto(url, wait_until='domcontentloaded', timeout=page_timeout_sec * 1000)
         try:
@@ -167,7 +169,34 @@ async def _fetch_page(
             await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
             await page.wait_for_timeout(800)
     except Exception as exc:  # noqa: BLE001
-        errors.append(f'navigation_error: {exc}')
+        errors.append(f'open_page_timeout_or_error: {exc}')
+        _step_log(site.code, url, 'response_received', step_ts, ok=False, exc=exc)
+
+    step_ts = asyncio.get_running_loop().time()
+    try:
+        if stage_state is not None:
+            stage_state['stage'] = 'dom_content_loaded'
+        await asyncio.wait_for(page.wait_for_load_state('domcontentloaded'), timeout=CRAWL_DOM_TIMEOUT_SEC)
+        _step_log(site.code, url, 'dom_content_loaded', step_ts, ok=True)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f'dom_content_timeout_or_error: {exc}')
+        _step_log(site.code, url, 'dom_content_loaded', step_ts, ok=False, exc=exc)
+
+    step_ts = asyncio.get_running_loop().time()
+    try:
+        if stage_state is not None:
+            stage_state['stage'] = 'render_initial'
+        await asyncio.wait_for(page.wait_for_load_state('networkidle'), timeout=CRAWL_DOM_TIMEOUT_SEC)
+        _step_log(site.code, url, 'render_idle', step_ts, ok=True)
+    except Exception:
+        _step_log(site.code, url, 'render_idle', step_ts, ok=False)
+
+    for _ in range(2):
+        try:
+            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+            await page.wait_for_timeout(600)
+        except Exception:
+            break
 
     final_url = page.url or url
     html = ''
@@ -185,7 +214,11 @@ async def _fetch_page(
         soup = BeautifulSoup(html, 'lxml')
         title = soup.title.get_text(' ', strip=True) if soup.title else ''
         h1_el = soup.find('h1')
+        step_ts = asyncio.get_running_loop().time()
+        if stage_state is not None:
+            stage_state['stage'] = 'h1_read'
         h1 = h1_el.get_text(' ', strip=True) if h1_el else ''
+        _step_log(site.code, url, 'h1_read', step_ts, ok=True)
         h2_count = len(soup.find_all('h2'))
         canonical_el = soup.find('link', attrs={'rel': lambda v: v and 'canonical' in v})
         canonical = canonical_el.get('href', '') if canonical_el else ''
@@ -217,7 +250,8 @@ async def _fetch_page(
         except Exception as exc:  # noqa: BLE001
             errors.append(f'dom_link_extract_error: {exc}')
     except Exception as exc:  # noqa: BLE001
-        errors.append(f'parse_error: {exc}')
+        errors.append(f'content_or_parse_timeout: {exc}')
+        _step_log(site.code, url, 'content_extracted', step_ts if "step_ts" in locals() else asyncio.get_running_loop().time(), ok=False, exc=exc)
 
     status_code = response.status if response else None
     try:
