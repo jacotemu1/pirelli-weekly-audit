@@ -71,6 +71,14 @@ def main() -> int:
         else:
             print('[RUN] fitment skipped: no cases loaded', flush=True)
 
+        screenshot_by_url = {p.final_url or p.url: getattr(p, 'screenshot_path', '') for p in pages}
+        screenshot_by_url.update({p.url: getattr(p, 'screenshot_path', '') for p in pages})
+        for f in findings:
+            if not getattr(f, 'screenshot_path', ''):
+                f.screenshot_path = screenshot_by_url.get(f.url, '')
+            if isinstance(f.data, dict) and f.screenshot_path and not f.data.get('screenshot_path'):
+                f.data['screenshot_path'] = f.screenshot_path
+
         storage.save_pages(run_id, pages)
         storage.save_findings(run_id, findings)
         diff = storage.diff_findings(run_id)

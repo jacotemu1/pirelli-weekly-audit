@@ -112,6 +112,7 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
             'meta_description': p.meta_description,
             'crawl_depth': getattr(p, 'crawl_depth', 0),
             'discovered_from': getattr(p, 'discovered_from', ''),
+            'screenshot_path': getattr(p, 'screenshot_path', ''),
             'errors': ' | '.join(p.errors),
         }
         for p in pages
@@ -135,6 +136,7 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
             'crawl_depth': _finding_crawl_depth(f),
             'fitment_tipo': getattr(f, 'fitment_tipo', '') or (f.data.get('fitment_tipo', '') if isinstance(f.data, dict) else ''),
             'fitment_step': getattr(f, 'fitment_step', '') or (f.data.get('fitment_step', '') if isinstance(f.data, dict) else ''),
+            'screenshot_path': getattr(f, 'screenshot_path', '') or (f.data.get('screenshot_path', '') if isinstance(f.data, dict) else ''),
             'fingerprint': f.fingerprint,
             'stato_settimanale': 'new' if f.fingerprint in diff['new'] else 'persistent' if f.fingerprint in diff['persistent'] else '',
         }

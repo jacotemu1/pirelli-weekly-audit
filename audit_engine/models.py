@@ -48,6 +48,7 @@ class PageResult:
     meta_description: str
     crawl_depth: int = 0
     discovered_from: str = ''
+    screenshot_path: str = ''
     errors: list[str] = field(default_factory=list)
 
 
@@ -71,4 +72,5 @@ class Finding:
     crawl_depth: int = 0
     fitment_tipo: str = ''
     fitment_step: str = ''
+    screenshot_path: str = ''
     data: dict[str, Any] = field(default_factory=dict)
