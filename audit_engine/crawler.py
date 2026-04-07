@@ -23,12 +23,29 @@ MAX_PAGES_PER_SITE = int(os.getenv('PIRELLI_MAX_PAGES_PER_SITE', '420'))
 MAX_CRAWL_DEPTH = int(os.getenv('PIRELLI_MAX_CRAWL_DEPTH', '7'))
 CRAWL_MARKET_BUDGET_SEC = int(os.getenv('PIRELLI_CRAWL_MARKET_BUDGET_SEC', '120'))
 CRAWL_TOTAL_BUDGET_SEC = int(os.getenv('PIRELLI_CRAWL_TOTAL_BUDGET_SEC', '1800'))
+CRAWL_HOME_TIMEOUT_SEC = int(os.getenv('PIRELLI_CRAWL_HOME_TIMEOUT_SEC', '35'))
+CRAWL_PAGE_TIMEOUT_SEC = int(os.getenv('PIRELLI_CRAWL_PAGE_TIMEOUT_SEC', '30'))
+CRAWL_HTML_TIMEOUT_SEC = int(os.getenv('PIRELLI_CRAWL_HTML_TIMEOUT_SEC', '20'))
+CRAWL_HEARTBEAT_SEC = int(os.getenv('PIRELLI_CRAWL_HEARTBEAT_SEC', '15'))
 ONCLICK_URL_PATTERN = re.compile(r"""(?:location\.href|window\.open)\(['"]([^'"]+)['"]\)""")
 INLINE_URL_PATTERN = re.compile(r"""["'](https?://[^"'\s]+|/[^"'\s]+)["']""")
 
 
 def _crawl_log(message: str) -> None:
     print(f'[CRAWL] {message}', flush=True)
+
+
+def _detect_home_entrypoints(page: PageResult) -> dict[str, bool]:
+    text = f'{page.title} {page.h1} {page.text}'.lower()
+    links_blob = ' '.join(page.links).lower()
+    blob = f'{text} {links_blob}'
+    return {
+        'product_search': any(k in blob for k in ('find your tyre', 'trova il pneumatico', 'vehicle', 'veicolo', 'size', 'misura', 'plate', 'targa')),
+        'dealer': any(k in blob for k in ('dealer', 'rivenditor', 'locator', 'store')),
+        'editorial': any(k in blob for k in ('technology', 'tecnologia', 'faq', 'guide', 'news', 'service')),
+        'product_family': any(k in blob for k in ('p zero', 'cinturato', 'scorpion', 'diablo')),
+        'use_case': any(k in blob for k in ('suv', 'ev', 'winter', 'all season')),
+    }
 
 
 def _normalize_url(url: str) -> str:
@@ -126,12 +143,20 @@ def _extract_links_from_html(base_url: str, html: str) -> list[str]:
     return sorted(candidates)
 
 
-async def _fetch_page(context: BrowserContext, site: Site, page_type: str, url: str, crawl_depth: int = 0, discovered_from: str = '') -> PageResult:
+async def _fetch_page(
+    context: BrowserContext,
+    site: Site,
+    page_type: str,
+    url: str,
+    crawl_depth: int = 0,
+    discovered_from: str = '',
+    page_timeout_sec: int = CRAWL_PAGE_TIMEOUT_SEC,
+) -> PageResult:
     page = await context.new_page()
     errors: list[str] = []
     response = None
     try:
-        response = await page.goto(url, wait_until='domcontentloaded', timeout=45000)
+        response = await page.goto(url, wait_until='domcontentloaded', timeout=page_timeout_sec * 1000)
         try:
             await page.wait_for_load_state('networkidle', timeout=8000)
         except Exception:
@@ -153,7 +178,7 @@ async def _fetch_page(context: BrowserContext, site: Site, page_type: str, url: 
     links: list[str] = []
 
     try:
-        html = await page.content()
+        html = await asyncio.wait_for(page.content(), timeout=CRAWL_HTML_TIMEOUT_SEC)
         soup = BeautifulSoup(html, 'lxml')
         title = soup.title.get_text(' ', strip=True) if soup.title else ''
         h1_el = soup.find('h1')
@@ -216,7 +241,7 @@ async def _fetch_page(context: BrowserContext, site: Site, page_type: str, url: 
     )
 
 
-async def _crawl_site(context: BrowserContext, site: Site) -> list[PageResult]:
+async def _crawl_site(context: BrowserContext, site: Site, stage_state: dict[str, str] | None = None) -> list[PageResult]:
     results: list[PageResult] = []
     visited: set[str] = set()
     queued: set[str] = set()
@@ -226,19 +251,51 @@ async def _crawl_site(context: BrowserContext, site: Site) -> list[PageResult]:
     seed = _normalize_url(homepage_seed)
     queue.append((seed, 'home', 0, 'seed_homepage'))
     queued.add(seed)
+    start_ts = asyncio.get_running_loop().time()
+    last_heartbeat = start_ts
 
     while queue and len(visited) < MAX_PAGES_PER_SITE:
+        now = asyncio.get_running_loop().time()
+        if now - last_heartbeat >= CRAWL_HEARTBEAT_SEC:
+            _crawl_log(
+                f'heartbeat: {site.code} queue={len(queue)} visited={len(visited)} '
+                f'elapsed={int(now-start_ts)}s stage={(stage_state or {}).get("stage", "queue_processing")}'
+            )
+            last_heartbeat = now
+
+        if stage_state is not None:
+            stage_state['stage'] = 'queue_processing'
         queue = deque(sorted(queue, key=lambda item: _priority(item[0])))
         url, page_type, depth, discovered_from = queue.popleft()
         normalized = _normalize_url(url)
         if normalized in visited or not _same_market(site, normalized):
             continue
 
+        _crawl_log(f'page visit start: {site.code} depth={depth} url={normalized}')
         visited.add(normalized)
         try:
-            result = await _fetch_page(context, site, page_type, normalized, crawl_depth=depth, discovered_from=discovered_from)
+            if stage_state is not None:
+                stage_state['stage'] = 'opening_home' if depth == 0 else 'visiting_page'
+            if depth == 0:
+                _crawl_log(f'home open start: {site.code} url={normalized}')
+            result = await asyncio.wait_for(
+                _fetch_page(
+                    context,
+                    site,
+                    page_type,
+                    normalized,
+                    crawl_depth=depth,
+                    discovered_from=discovered_from,
+                    page_timeout_sec=CRAWL_HOME_TIMEOUT_SEC if depth == 0 else CRAWL_PAGE_TIMEOUT_SEC,
+                ),
+                timeout=(CRAWL_HOME_TIMEOUT_SEC if depth == 0 else CRAWL_PAGE_TIMEOUT_SEC) + CRAWL_HTML_TIMEOUT_SEC + 10,
+            )
+            if depth == 0:
+                _crawl_log(f'home open done: {site.code}')
         except Exception as exc:  # noqa: BLE001
             # Hard-fail protection: record the page as errored and continue crawl.
+            stage = (stage_state or {}).get('stage', 'other')
+            _crawl_log(f'market error: {site.code} stage={stage} error={exc}')
             results.append(
                 PageResult(
                     site_code=site.code,
@@ -263,13 +320,34 @@ async def _crawl_site(context: BrowserContext, site: Site) -> list[PageResult]:
                 )
             )
             continue
+        if stage_state is not None:
+            stage_state['stage'] = 'fetching_html'
         results.append(result)
+        _crawl_log(f'page visit done: {site.code} status={result.status_code} title={result.title[:80]}')
+        _crawl_log(f'html fetched: {site.code} size={len(result.html or "")}')
+        _crawl_log(f'links extracted: {site.code} count={len(result.links)}')
+
+        if depth == 0:
+            if stage_state is not None:
+                stage_state['stage'] = 'detecting_entrypoints'
+            ep = _detect_home_entrypoints(result)
+            _crawl_log(
+                f'expected entrypoints seen: {site.code} '
+                f'product_search={"yes" if ep["product_search"] else "no"} '
+                f'dealer={"yes" if ep["dealer"] else "no"} '
+                f'editorial={"yes" if ep["editorial"] else "no"} '
+                f'product_family={"yes" if ep["product_family"] else "no"} '
+                f'use_case={"yes" if ep["use_case"] else "no"}'
+            )
 
         if depth >= MAX_CRAWL_DEPTH:
             continue
         if result.status_code and result.status_code >= 400:
             continue
 
+        new_links = 0
+        if stage_state is not None:
+            stage_state['stage'] = 'queue_seeding'
         for link in result.links:
             normalized_link = _normalize_url(link)
             if normalized_link in visited or normalized_link in queued:
@@ -279,6 +357,11 @@ async def _crawl_site(context: BrowserContext, site: Site) -> list[PageResult]:
             parent = result.final_url or result.url or normalized
             queue.append((normalized_link, _guess_page_type(normalized_link), depth + 1, parent))
             queued.add(normalized_link)
+            new_links += 1
+        if depth == 0:
+            _crawl_log(f'queue seeded: {site.code} size={len(queue)}')
+        if new_links == 0 and queue:
+            _crawl_log(f'queue processing no new links: {site.code} queue={len(queue)} visited={len(visited)}')
 
     return results
 
@@ -298,8 +381,9 @@ async def crawl_sites(sites: list[Site]) -> list[PageResult]:
             _crawl_log(f'market start: {site.code} ({index}/{len(sites)})')
             market_timeout = min(CRAWL_MARKET_BUDGET_SEC, remaining)
             market_pages_before = len(results)
+            stage_state = {'stage': 'other'}
             try:
-                site_results = await asyncio.wait_for(_crawl_site(context, site), timeout=market_timeout)
+                site_results = await asyncio.wait_for(_crawl_site(context, site, stage_state=stage_state), timeout=market_timeout)
                 for page_idx, page_result in enumerate(site_results, start=1):
                     _crawl_log(
                         f'market page: {site.code} count={page_idx} depth={page_result.crawl_depth} '
@@ -308,7 +392,7 @@ async def crawl_sites(sites: list[Site]) -> list[PageResult]:
                 results.extend(site_results)
                 _crawl_log(f'market done: {site.code} pages={len(site_results)}')
             except asyncio.TimeoutError:
-                _crawl_log(f'market timeout: {site.code}')
+                _crawl_log(f'market timeout: {site.code} stage={stage_state.get("stage", "other")}')
                 results.append(
                     PageResult(
                         site_code=site.code,
@@ -329,11 +413,11 @@ async def crawl_sites(sites: list[Site]) -> list[PageResult]:
                         meta_description='',
                         crawl_depth=0,
                         discovered_from='seed_homepage',
-                        errors=[f'market_timeout: exceeded_{market_timeout:.1f}s'],
+                        errors=[f'market_timeout: exceeded_{market_timeout:.1f}s; stage={stage_state.get("stage", "other")}'],
                     )
                 )
             except Exception as exc:  # noqa: BLE001
-                _crawl_log(f'market error: {site.code} {exc}')
+                _crawl_log(f'market error: {site.code} stage={stage_state.get("stage", "other")} error={exc}')
                 # Prevent one market failure from aborting the whole weekly run.
                 results.append(
                     PageResult(
