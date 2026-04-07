@@ -26,6 +26,8 @@ CRAWL_TOTAL_BUDGET_SEC = int(os.getenv('PIRELLI_CRAWL_TOTAL_BUDGET_SEC', '1800')
 CRAWL_HOME_TIMEOUT_SEC = int(os.getenv('PIRELLI_CRAWL_HOME_TIMEOUT_SEC', '35'))
 CRAWL_PAGE_TIMEOUT_SEC = int(os.getenv('PIRELLI_CRAWL_PAGE_TIMEOUT_SEC', '30'))
 CRAWL_HTML_TIMEOUT_SEC = int(os.getenv('PIRELLI_CRAWL_HTML_TIMEOUT_SEC', '20'))
+CRAWL_DOM_TIMEOUT_SEC = int(os.getenv('PIRELLI_CRAWL_DOM_TIMEOUT_SEC', '10'))
+CRAWL_META_TIMEOUT_SEC = int(os.getenv('PIRELLI_CRAWL_META_TIMEOUT_SEC', '6'))
 CRAWL_HEARTBEAT_SEC = int(os.getenv('PIRELLI_CRAWL_HEARTBEAT_SEC', '15'))
 ONCLICK_URL_PATTERN = re.compile(r"""(?:location\.href|window\.open)\(['"]([^'"]+)['"]\)""")
 INLINE_URL_PATTERN = re.compile(r"""["'](https?://[^"'\s]+|/[^"'\s]+)["']""")
@@ -33,6 +35,13 @@ INLINE_URL_PATTERN = re.compile(r"""["'](https?://[^"'\s]+|/[^"'\s]+)["']""")
 
 def _crawl_log(message: str) -> None:
     print(f'[CRAWL] {message}', flush=True)
+
+
+def _step_log(site_code: str, url: str, step: str, started: float, ok: bool, exc: Exception | None = None) -> None:
+    elapsed_ms = int((asyncio.get_running_loop().time() - started) * 1000)
+    status = 'ok' if ok else 'error'
+    err = f' error={exc}' if exc else ''
+    _crawl_log(f'step={step} market={site_code} status={status} duration_ms={elapsed_ms} url={url}{err}')
 
 
 def _detect_home_entrypoints(page: PageResult) -> dict[str, bool]:
@@ -151,21 +160,47 @@ async def _fetch_page(
     crawl_depth: int = 0,
     discovered_from: str = '',
     page_timeout_sec: int = CRAWL_PAGE_TIMEOUT_SEC,
+    stage_state: dict[str, str] | None = None,
 ) -> PageResult:
     page = await context.new_page()
     errors: list[str] = []
     response = None
+    step_ts = asyncio.get_running_loop().time()
+    _crawl_log(f'open_page_start market={site.code} url={url}')
     try:
+        if stage_state is not None:
+            stage_state['stage'] = 'opening_home' if crawl_depth == 0 else 'visiting_page'
         response = await page.goto(url, wait_until='domcontentloaded', timeout=page_timeout_sec * 1000)
-        try:
-            await page.wait_for_load_state('networkidle', timeout=8000)
-        except Exception:
-            pass
-        for _ in range(2):
-            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-            await page.wait_for_timeout(800)
+        _step_log(site.code, url, 'response_received', step_ts, ok=True)
     except Exception as exc:  # noqa: BLE001
-        errors.append(f'navigation_error: {exc}')
+        errors.append(f'open_page_timeout_or_error: {exc}')
+        _step_log(site.code, url, 'response_received', step_ts, ok=False, exc=exc)
+
+    step_ts = asyncio.get_running_loop().time()
+    try:
+        if stage_state is not None:
+            stage_state['stage'] = 'dom_content_loaded'
+        await asyncio.wait_for(page.wait_for_load_state('domcontentloaded'), timeout=CRAWL_DOM_TIMEOUT_SEC)
+        _step_log(site.code, url, 'dom_content_loaded', step_ts, ok=True)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f'dom_content_timeout_or_error: {exc}')
+        _step_log(site.code, url, 'dom_content_loaded', step_ts, ok=False, exc=exc)
+
+    step_ts = asyncio.get_running_loop().time()
+    try:
+        if stage_state is not None:
+            stage_state['stage'] = 'render_initial'
+        await asyncio.wait_for(page.wait_for_load_state('networkidle'), timeout=CRAWL_DOM_TIMEOUT_SEC)
+        _step_log(site.code, url, 'render_idle', step_ts, ok=True)
+    except Exception:
+        _step_log(site.code, url, 'render_idle', step_ts, ok=False)
+
+    for _ in range(2):
+        try:
+            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+            await page.wait_for_timeout(600)
+        except Exception:
+            break
 
     final_url = page.url or url
     html = ''
@@ -178,11 +213,23 @@ async def _fetch_page(
     links: list[str] = []
 
     try:
+        step_ts = asyncio.get_running_loop().time()
+        if stage_state is not None:
+            stage_state['stage'] = 'fetching_html'
         html = await asyncio.wait_for(page.content(), timeout=CRAWL_HTML_TIMEOUT_SEC)
+        _step_log(site.code, url, 'content_extracted', step_ts, ok=True)
         soup = BeautifulSoup(html, 'lxml')
+        step_ts = asyncio.get_running_loop().time()
+        if stage_state is not None:
+            stage_state['stage'] = 'title_read'
         title = soup.title.get_text(' ', strip=True) if soup.title else ''
+        _step_log(site.code, url, 'title_read', step_ts, ok=True)
         h1_el = soup.find('h1')
+        step_ts = asyncio.get_running_loop().time()
+        if stage_state is not None:
+            stage_state['stage'] = 'h1_read'
         h1 = h1_el.get_text(' ', strip=True) if h1_el else ''
+        _step_log(site.code, url, 'h1_read', step_ts, ok=True)
         h2_count = len(soup.find_all('h2'))
         canonical_el = soup.find('link', attrs={'rel': lambda v: v and 'canonical' in v})
         canonical = canonical_el.get('href', '') if canonical_el else ''
@@ -190,9 +237,14 @@ async def _fetch_page(
         meta_description = meta_el.get('content', '') if meta_el else ''
         text = soup.get_text('\n', strip=True)
         try:
+            step_ts = asyncio.get_running_loop().time()
+            if stage_state is not None:
+                stage_state['stage'] = 'extracting_links'
             links = _extract_links_from_html(final_url, html)
+            _step_log(site.code, url, 'extracting_links', step_ts, ok=True)
         except Exception as exc:  # noqa: BLE001
             errors.append(f'link_extract_error: {exc}')
+            _step_log(site.code, url, 'extracting_links', step_ts, ok=False, exc=exc)
             links = []
 
         # Include only real links found in rendered DOM (no synthetic URL building).
@@ -214,9 +266,11 @@ async def _fetch_page(
         except Exception as exc:  # noqa: BLE001
             errors.append(f'dom_link_extract_error: {exc}')
     except Exception as exc:  # noqa: BLE001
-        errors.append(f'parse_error: {exc}')
+        errors.append(f'content_or_parse_timeout: {exc}')
+        _step_log(site.code, url, 'content_extracted', step_ts if "step_ts" in locals() else asyncio.get_running_loop().time(), ok=False, exc=exc)
 
     status_code = response.status if response else None
+    _crawl_log(f'page_done market={site.code} url={url} status={status_code}')
     await page.close()
     return PageResult(
         site_code=site.code,
@@ -287,6 +341,7 @@ async def _crawl_site(context: BrowserContext, site: Site, stage_state: dict[str
                     crawl_depth=depth,
                     discovered_from=discovered_from,
                     page_timeout_sec=CRAWL_HOME_TIMEOUT_SEC if depth == 0 else CRAWL_PAGE_TIMEOUT_SEC,
+                    stage_state=stage_state,
                 ),
                 timeout=(CRAWL_HOME_TIMEOUT_SEC if depth == 0 else CRAWL_PAGE_TIMEOUT_SEC) + CRAWL_HTML_TIMEOUT_SEC + 10,
             )
