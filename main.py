@@ -63,7 +63,7 @@ def main() -> int:
                     )
                 )
                 findings.extend(fitment_findings)
-                print(f'[RUN] fitment done total_findings={len(fitment_findings)}', flush=True)
+                print(f'[RUN] fitment done findings={len(fitment_findings)}', flush=True)
             except asyncio.TimeoutError:
                 print(f'[RUN] fitment total budget exceeded ({FITMENT_TOTAL_BUDGET_SEC}s), continuing without blocking run', flush=True)
             except Exception as fitment_exc:  # noqa: BLE001
