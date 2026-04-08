@@ -193,6 +193,7 @@ async def _fetch_page(
     page = await context.new_page()
     errors: list[str] = []
     response = None
+    _crawl_log(f'page goto start: {site.code} url={url}')
     try:
         if stage_state is not None:
             stage_state['stage'] = 'page_goto'
@@ -225,7 +226,10 @@ async def _fetch_page(
         soup = BeautifulSoup(html, 'lxml')
         title = soup.title.get_text(' ', strip=True) if soup.title else ''
         h1_el = soup.find('h1')
+        if stage_state is not None:
+            stage_state['stage'] = 'page_read_h1'
         h1 = h1_el.get_text(' ', strip=True) if h1_el else ''
+        _crawl_log(f'h1 read: {site.code} value={h1[:80]}')
         h2_count = len(soup.find_all('h2'))
         canonical_el = soup.find('link', attrs={'rel': lambda v: v and 'canonical' in v})
         canonical = canonical_el.get('href', '') if canonical_el else ''
