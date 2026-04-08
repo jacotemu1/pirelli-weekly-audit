@@ -1,0 +1,67 @@
+name: Pirelli Weekly Audit
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore audit history cache
+        uses: actions/cache@v4
+        with:
+          path: outputs/audit_history_v4.db
+          key: audit-history-v4-${{ github.run_id }}
+          restore-keys: |
+            audit-history-v4-
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Run script
+        env:
+          PYTHONUNBUFFERED: '1'
+          PIRELLI_MAX_PAGES_PER_SITE: '180'
+          PIRELLI_MAX_CRAWL_DEPTH: '4'
+          PIRELLI_CRAWL_HOME_TIMEOUT_SEC: '35'
+          PIRELLI_CRAWL_PAGE_TIMEOUT_SEC: '30'
+          PIRELLI_CRAWL_GOTO_TIMEOUT_SEC: '20'
+          PIRELLI_CRAWL_DOM_TIMEOUT_SEC: '8'
+          PIRELLI_CRAWL_MARKET_BUDGET_SEC: '120'
+          PIRELLI_CRAWL_TOTAL_BUDGET_SEC: '1800'
+          PIRELLI_CRAWL_HTML_TIMEOUT_SEC: '12'
+          PIRELLI_CRAWL_LINKS_TIMEOUT_SEC: '8'
+          PIRELLI_FITMENT_MARKET_BUDGET_SEC: '50'
+          PIRELLI_MAX_ENQUEUE_PER_PAGE: '45'
+          PIRELLI_MAX_TEMPLATE_REPRESENTATIVES: '3'
+          PIRELLI_MAX_DEALER_LINKS_PER_PAGE: '25'
+          PIRELLI_MAX_LINKS_FROM_MASSIVE_PAGE: '120'
+          PIRELLI_FITMENT_JOURNEY_TIMEOUT_SEC: '22'
+          PIRELLI_FITMENT_TOTAL_BUDGET_SEC: '900'
+          PIRELLI_FITMENT_GLOBAL_BUDGET_SEC: '900'
+        run: |
+          echo "[RUN] workflow trigger: ${{ github.event_name }}"
+          python main.py --config config/sites.yaml --fitment-config config/fitment_test_cases.yaml --db outputs/audit_history_v4.db --output-dir outputs
+
+      - name: Upload output
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-output
+          path: outputs/

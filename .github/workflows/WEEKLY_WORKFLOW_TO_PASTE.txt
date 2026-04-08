@@ -8,6 +8,7 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -16,10 +17,10 @@ jobs:
       - name: Restore audit history cache
         uses: actions/cache@v4
         with:
-          path: outputs/audit_history_v3.db
-          key: audit-history-v3-${{ github.run_id }}
+          path: outputs/audit_history_v4.db
+          key: audit-history-v4-${{ github.run_id }}
           restore-keys: |
-            audit-history-v3-
+            audit-history-v4-
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -34,9 +35,9 @@ jobs:
 
       - name: Run script
         env:
-          PIRELLI_MAX_PAGES_PER_SITE: '140'
-          PIRELLI_MAX_CRAWL_DEPTH: '4'
-        run: python main.py
+          PIRELLI_MAX_PAGES_PER_SITE: '220'
+          PIRELLI_MAX_CRAWL_DEPTH: '5'
+        run: python main.py --config config/sites.yaml --db outputs/audit_history_v4.db --output-dir outputs
 
       - name: Upload output
         uses: actions/upload-artifact@v4
