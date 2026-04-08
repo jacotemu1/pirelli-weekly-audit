@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS pages (
     crawl_depth INTEGER DEFAULT 0,
     discovered_from TEXT DEFAULT '',
     errors TEXT,
+    template_type TEXT DEFAULT 'generic',
+    journey TEXT DEFAULT 'generic',
+    coverage_confidence TEXT DEFAULT 'Media',
+    evidence_type TEXT DEFAULT 'dom',
     FOREIGN KEY(run_id) REFERENCES runs(id)
 );
 
@@ -58,6 +62,14 @@ CREATE TABLE IF NOT EXISTS findings (
     crawl_depth INTEGER DEFAULT 0,
     fitment_tipo TEXT DEFAULT '',
     fitment_step TEXT DEFAULT '',
+    template_type TEXT DEFAULT 'generic',
+    journey TEXT DEFAULT 'generic',
+    evidence_type TEXT DEFAULT 'dom',
+    coverage_confidence TEXT DEFAULT 'Media',
+    observed TEXT DEFAULT '',
+    expected TEXT DEFAULT '',
+    business_impact TEXT DEFAULT '',
+    repro_steps TEXT DEFAULT '',
     fingerprint TEXT NOT NULL,
     UNIQUE(run_id, fingerprint),
     FOREIGN KEY(run_id) REFERENCES runs(id)
@@ -78,12 +90,24 @@ class Storage:
     def _migrate_schema(self) -> None:
         self._ensure_column('pages', 'crawl_depth', 'INTEGER DEFAULT 0')
         self._ensure_column('pages', 'discovered_from', "TEXT DEFAULT ''")
+        self._ensure_column('pages', 'template_type', "TEXT DEFAULT 'generic'")
+        self._ensure_column('pages', 'journey', "TEXT DEFAULT 'generic'")
+        self._ensure_column('pages', 'coverage_confidence', "TEXT DEFAULT 'Media'")
+        self._ensure_column('pages', 'evidence_type', "TEXT DEFAULT 'dom'")
         self._ensure_column('findings', 'evidence_tecnica', "TEXT DEFAULT ''")
         self._ensure_column('findings', 'confidence', "TEXT DEFAULT 'Media'")
         self._ensure_column('findings', 'discovered_from', "TEXT DEFAULT ''")
         self._ensure_column('findings', 'crawl_depth', 'INTEGER DEFAULT 0')
         self._ensure_column('findings', 'fitment_tipo', "TEXT DEFAULT ''")
         self._ensure_column('findings', 'fitment_step', "TEXT DEFAULT ''")
+        self._ensure_column('findings', 'template_type', "TEXT DEFAULT 'generic'")
+        self._ensure_column('findings', 'journey', "TEXT DEFAULT 'generic'")
+        self._ensure_column('findings', 'evidence_type', "TEXT DEFAULT 'dom'")
+        self._ensure_column('findings', 'coverage_confidence', "TEXT DEFAULT 'Media'")
+        self._ensure_column('findings', 'observed', "TEXT DEFAULT ''")
+        self._ensure_column('findings', 'expected', "TEXT DEFAULT ''")
+        self._ensure_column('findings', 'business_impact', "TEXT DEFAULT ''")
+        self._ensure_column('findings', 'repro_steps', "TEXT DEFAULT ''")
 
     def _ensure_column(self, table: str, column: str, ddl: str) -> None:
         cur = self.conn.cursor()
@@ -104,8 +128,8 @@ class Storage:
 
     def save_pages(self, run_id: int, pages: Iterable[PageResult]) -> None:
         self.conn.executemany(
-            '''INSERT INTO pages(run_id, site_code, country, region, language, url, page_type, final_url, status_code, title, h1, h2_count, canonical, meta_description, crawl_depth, discovered_from, errors)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            '''INSERT INTO pages(run_id, site_code, country, region, language, url, page_type, final_url, status_code, title, h1, h2_count, canonical, meta_description, crawl_depth, discovered_from, errors, template_type, journey, coverage_confidence, evidence_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             [(
                 run_id,
                 p.site_code,
@@ -124,14 +148,18 @@ class Storage:
                 p.crawl_depth,
                 p.discovered_from,
                 ' | '.join(p.errors),
+                getattr(p, 'template_type', 'generic'),
+                getattr(p, 'journey', 'generic'),
+                getattr(p, 'coverage_confidence', 'Media'),
+                getattr(p, 'evidence_type', 'dom'),
             ) for p in pages]
         )
         self.conn.commit()
 
     def save_findings(self, run_id: int, findings: Iterable[Finding]) -> None:
         self.conn.executemany(
-            '''INSERT OR IGNORE INTO findings(run_id, site_code, country, region, url, page_type, category, severity, title, description, impact, suggested_fix, evidence_tecnica, confidence, discovered_from, crawl_depth, fitment_tipo, fitment_step, fingerprint)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            '''INSERT OR IGNORE INTO findings(run_id, site_code, country, region, url, page_type, category, severity, title, description, impact, suggested_fix, evidence_tecnica, confidence, discovered_from, crawl_depth, fitment_tipo, fitment_step, template_type, journey, evidence_type, coverage_confidence, observed, expected, business_impact, repro_steps, fingerprint)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             [(
                 run_id,
                 f.site_code,
@@ -151,6 +179,14 @@ class Storage:
                 f.crawl_depth,
                 f.fitment_tipo,
                 f.fitment_step,
+                getattr(f, 'template_type', 'generic'),
+                getattr(f, 'journey', 'generic'),
+                getattr(f, 'evidence_type', 'dom'),
+                getattr(f, 'coverage_confidence', 'Media'),
+                getattr(f, 'observed', ''),
+                getattr(f, 'expected', ''),
+                getattr(f, 'business_impact', ''),
+                getattr(f, 'repro_steps', ''),
                 f.fingerprint,
             ) for f in findings]
         )

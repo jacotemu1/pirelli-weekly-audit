@@ -50,6 +50,10 @@ class PageResult:
     discovered_from: str = ''
     screenshot_path: str = ''
     errors: list[str] = field(default_factory=list)
+    template_type: str = 'generic'
+    journey: str = 'generic'
+    coverage_confidence: str = 'Media'
+    evidence_type: str = 'dom'
 
 
 @dataclass
@@ -73,4 +77,12 @@ class Finding:
     fitment_tipo: str = ''
     fitment_step: str = ''
     screenshot_path: str = ''
+    template_type: str = 'generic'
+    journey: str = 'generic'
+    evidence_type: str = 'dom'
+    coverage_confidence: str = 'Media'
+    observed: str = ''
+    expected: str = ''
+    business_impact: str = ''
+    repro_steps: str = ''
     data: dict[str, Any] = field(default_factory=dict)

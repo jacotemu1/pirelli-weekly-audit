@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from audit_engine.config_loader import load_fitment_cases, load_sites
-from audit_engine.crawler import crawl_sites
+from audit_engine.crawler import crawl_sites, run_quality_audit
 from audit_engine.fitment import run_fitment_checks
 from audit_engine.reporting import build_excel, build_markdown_summary
 from audit_engine.rules import run_rules
@@ -51,8 +51,17 @@ def main() -> int:
         pages = asyncio.run(crawl_sites(sites))
         crawled_markets = len({p.site_code for p in pages})
         print(f'[RUN] crawl done markets={crawled_markets} pages={len(pages)}', flush=True)
+        print('[TEMPLATE] selection start', flush=True)
+        template_summary = {}
+        for p in pages:
+            key = f"{p.site_code}:{getattr(p, 'template_type', 'generic')}"
+            template_summary[key] = template_summary.get(key, 0) + 1
+        print(f'[TEMPLATE] selection done templates={len(template_summary)}', flush=True)
+
         findings = run_rules(pages)
-        print(f'[RUN] rules done findings={len(findings)}', flush=True)
+        audit_findings = run_quality_audit(pages)
+        findings.extend(audit_findings)
+        print(f'[AUDIT] rules done base_findings={len(findings)-len(audit_findings)} quality_findings={len(audit_findings)} total={len(findings)}', flush=True)
         if fitment_cases:
             print(f'[RUN] fitment start markets_with_cases={len(fitment_cases)}', flush=True)
             try:

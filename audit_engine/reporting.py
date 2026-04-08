@@ -112,6 +112,10 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
             'meta_description': p.meta_description,
             'crawl_depth': getattr(p, 'crawl_depth', 0),
             'discovered_from': getattr(p, 'discovered_from', ''),
+            'template_type': getattr(p, 'template_type', 'generic'),
+            'journey': getattr(p, 'journey', 'generic'),
+            'coverage_confidence': getattr(p, 'coverage_confidence', 'Media'),
+            'evidence_type': getattr(p, 'evidence_type', 'dom'),
             'screenshot_path': getattr(p, 'screenshot_path', ''),
             'errors': ' | '.join(p.errors),
         }
@@ -136,7 +140,15 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
             'crawl_depth': _finding_crawl_depth(f),
             'fitment_tipo': getattr(f, 'fitment_tipo', '') or (f.data.get('fitment_tipo', '') if isinstance(f.data, dict) else ''),
             'fitment_step': getattr(f, 'fitment_step', '') or (f.data.get('fitment_step', '') if isinstance(f.data, dict) else ''),
+            'template_type': getattr(f, 'template_type', '') or (f.data.get('template_type', '') if isinstance(f.data, dict) else ''),
+            'journey': getattr(f, 'journey', '') or (f.data.get('journey', '') if isinstance(f.data, dict) else ''),
+            'evidence_type': getattr(f, 'evidence_type', '') or (f.data.get('evidence_type', '') if isinstance(f.data, dict) else ''),
+            'coverage_confidence': getattr(f, 'coverage_confidence', '') or (f.data.get('coverage_confidence', '') if isinstance(f.data, dict) else ''),
+            'osservato': getattr(f, 'observed', '') or (f.data.get('observed', '') if isinstance(f.data, dict) else ''),
+            'atteso': getattr(f, 'expected', '') or (f.data.get('expected', '') if isinstance(f.data, dict) else ''),
+            'step_riproduzione': getattr(f, 'repro_steps', '') or (f.data.get('repro_steps', '') if isinstance(f.data, dict) else ''),
             'screenshot_path': getattr(f, 'screenshot_path', '') or (f.data.get('screenshot_path', '') if isinstance(f.data, dict) else ''),
+            'finding_kind': 'limite_copertura' if 'Copertura incompleta' in str(f.title) else ('rumore_tecnico' if str(f.category).lower() == 'technical' and str(f.severity).lower() == 'bassa' else 'bug_vero'),
             'fingerprint': f.fingerprint,
             'stato_settimanale': 'new' if f.fingerprint in diff['new'] else 'persistent' if f.fingerprint in diff['persistent'] else '',
         }
@@ -182,7 +194,7 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
     )
 
     priorita_df = coverage_df.sort_values(['priority_score', 'bug_totali'], ascending=[False, False]) if not coverage_df.empty else pd.DataFrame()
-    diff_df = bugs_df[['mercato', 'paese', 'area_bug', 'gravita', 'titolo_bug', 'pagina', 'fingerprint', 'stato_settimanale']].copy() if not bugs_df.empty else pd.DataFrame()
+    diff_df = bugs_df[['mercato', 'paese', 'area_bug', 'gravita', 'titolo_bug', 'pagina', 'template_type', 'journey', 'finding_kind', 'fingerprint', 'stato_settimanale']].copy() if not bugs_df.empty else pd.DataFrame()
     pages_sheet_df = pages_df.rename(
         columns={
             'site_code': 'mercato',
@@ -209,6 +221,9 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
                 'html_chars': len(p.html or ''),
                 'text_chars': len(p.text or ''),
                 'errors': ' | '.join(p.errors),
+                'template_type': getattr(p, 'template_type', 'generic'),
+                'journey': getattr(p, 'journey', 'generic'),
+                'coverage_confidence': getattr(p, 'coverage_confidence', 'Media'),
             }
         )
     raw_df = pd.DataFrame(raw_rows)
