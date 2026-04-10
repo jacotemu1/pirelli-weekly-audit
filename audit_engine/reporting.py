@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -50,6 +51,47 @@ def _sheet_from_df(wb: Workbook, name: str, df: pd.DataFrame) -> None:
             if row_idx == 1:
                 cell.font = Font(bold=True)
                 cell.fill = PatternFill('solid', fgColor='D9EAD3')
+    _auto_width(ws)
+
+
+def _bugs_sheet_with_screenshots(wb: Workbook, name: str, df: pd.DataFrame) -> None:
+    if name in wb.sheetnames:
+        del wb[name]
+    ws = wb.create_sheet(name)
+    if df.empty:
+        ws['A1'] = 'No data'
+        return
+
+    # Scrivi headers
+    for col_idx, col_name in enumerate(df.columns, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=col_name)
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill('solid', fgColor='D9EAD3')
+        cell.alignment = Alignment(vertical='top', wrap_text=True)
+
+    # Scrivi dati e aggiungi screenshot
+    for row_idx, (_, row) in enumerate(df.iterrows(), start=2):
+        screenshot_path = row.get('screenshot_path', '')
+        for col_idx, (col_name, value) in enumerate(row.items(), start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.alignment = Alignment(vertical='top', wrap_text=True)
+
+        # Aggiungi screenshot se presente
+        if screenshot_path and Path(screenshot_path).exists():
+            try:
+                img = Image(screenshot_path)
+                # Ridimensiona per thumbnail
+                img.width = 200
+                img.height = 150
+                # Posiziona nella colonna screenshot (assumiamo sia l'ultima colonna)
+                screenshot_col = len(df.columns)
+                ws.add_image(img, f'{get_column_letter(screenshot_col)}{row_idx}')
+                # Imposta altezza riga
+                ws.row_dimensions[row_idx].height = 120
+            except Exception:
+                # Se errore, lascia il path come testo
+                pass
+
     _auto_width(ws)
 
 
@@ -148,7 +190,12 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
             'atteso': getattr(f, 'expected', '') or (f.data.get('expected', '') if isinstance(f.data, dict) else ''),
             'step_riproduzione': getattr(f, 'repro_steps', '') or (f.data.get('repro_steps', '') if isinstance(f.data, dict) else ''),
             'screenshot_path': getattr(f, 'screenshot_path', '') or (f.data.get('screenshot_path', '') if isinstance(f.data, dict) else ''),
-            'finding_kind': 'limite_copertura' if 'Copertura incompleta' in str(f.title) else ('rumore_tecnico' if str(f.category).lower() == 'technical' and str(f.severity).lower() == 'bassa' else 'bug_vero'),
+            'finding_kind': getattr(f, 'finding_kind', 'bug_vero'),
+            'page_verified': getattr(f, 'page_verified', False),
+            'content_verified': getattr(f, 'content_verified', False),
+            'visual_verified': getattr(f, 'visual_verified', False),
+            'http_verification': getattr(f, 'http_verification', ''),
+            'timeout_stage': getattr(f, 'timeout_stage', ''),
             'fingerprint': f.fingerprint,
             'stato_settimanale': 'new' if f.fingerprint in diff['new'] else 'persistent' if f.fingerprint in diff['persistent'] else '',
         }
@@ -231,7 +278,7 @@ def build_excel(output_path: str | Path, pages: list[PageResult], findings: list
     _sheet_from_df(wb, '00_Sintesi', sintesi_df)
     _sheet_from_df(wb, '01_Priorita', priorita_df)
     _sheet_from_df(wb, '02_Diff_settimanale', diff_df)
-    _sheet_from_df(wb, '10_Bug_Tutti', bugs_df)
+    _bugs_sheet_with_screenshots(wb, '10_Bug_Tutti', bugs_df)
     created_sheet_names: set[str] = set()
     for category, sheet_name in CATEGORY_SHEETS.items():
         if sheet_name in created_sheet_names:

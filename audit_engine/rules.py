@@ -31,6 +31,7 @@ def _finding(
     suggested_fix: str,
     evidence: str,
     confidence: str = 'Media',
+    finding_kind: str = 'bug_vero',
 ) -> Finding:
     return Finding(
         site_code=page.site_code,
@@ -49,12 +50,28 @@ def _finding(
         confidence=confidence,
         discovered_from=page.discovered_from,
         crawl_depth=page.crawl_depth,
+        screenshot_path=page.screenshot_path,
+        template_type=page.template_type,
+        journey=page.journey,
+        evidence_type=page.evidence_type,
+        coverage_confidence=page.coverage_confidence,
+        observed='',
+        expected='',
+        business_impact=impact,
+        repro_steps='',
         data={
             'evidenza_tecnica': evidence,
             'confidence': confidence,
             'discovered_from': page.discovered_from,
             'crawl_depth': page.crawl_depth,
+            'screenshot_path': page.screenshot_path,
         },
+        finding_kind=finding_kind,
+        page_verified=page.page_verified,
+        content_verified=page.content_verified,
+        visual_verified=page.visual_verified,
+        timeout_stage=page.timeout_stage,
+        error_message=page.error_message,
     )
 
 
@@ -66,24 +83,47 @@ def run_rules(pages: list[PageResult]) -> list[Finding]:
     for page in pages:
         source_label = page.discovered_from or 'seed_homepage'
 
+        # Miglior gestione 404
         if page.status_code is None or page.status_code >= 400:
-            confidence = 'Alta' if page.crawl_depth > 0 else 'Media'
-            severity = 'Media' if page.page_type == 'dealer' and page.crawl_depth > 0 else 'Alta'
-            findings.append(
-                _finding(
-                    page,
-                    'technical',
-                    severity,
-                    'Pagina non accessibile o con errore HTTP',
-                    'La pagina restituisce errore HTTP oppure non è stata caricata correttamente durante il crawl.',
-                    'Un utente può interrompere il percorso e perdere fiducia nel sito.',
-                    'Verificare redirect, disponibilità reale della pagina e regole di sicurezza lato CDN/firewall.',
-                    f'status_code={page.status_code}; source={source_label}',
-                    confidence,
+            if page.status_code in {404, 410} or (page.status_code is None and page.errors):
+                # Vero 404 o errore tecnico
+                title_kind = '404 reale' if page.status_code in {404, 410} else 'errore tecnico di caricamento'
+                finding_kind = 'rumore_tecnico' if not page.page_verified else 'bug_vero'
+                confidence = 'Alta' if page.page_verified else 'Bassa'
+                severity = 'Media' if page.page_type == 'dealer' and page.crawl_depth > 0 else 'Alta'
+                findings.append(
+                    _finding(
+                        page,
+                        'technical',
+                        severity,
+                        f'Pagina non accessibile: {title_kind}',
+                        f'La pagina restituisce {page.status_code or "nessuno status"} oppure non è stata caricata correttamente.',
+                        'Un utente può interrompere il percorso e perdere fiducia nel sito.',
+                        'Verificare redirect, disponibilità reale della pagina e regole di sicurezza lato CDN/firewall.',
+                        f'status_code={page.status_code}; timeout_stage={page.timeout_stage}; error_message={page.error_message}',
+                        confidence,
+                        finding_kind,
+                    )
                 )
-            )
+            elif page.status_code == 200 and '404' in (page.title or '').lower() or 'not found' in (page.text or '').lower():
+                # Soft 404
+                findings.append(
+                    _finding(
+                        page,
+                        'seo',
+                        'Alta',
+                        'Soft 404: pagina errore servita con status 200',
+                        'La pagina mostra contenuto di errore ma con status HTTP 200.',
+                        'Confusione SEO e crawling inefficiente.',
+                        'Impostare status 404/410 per pagine errore.',
+                        f'status_code={page.status_code}; title={page.title[:50]}',
+                        'Alta',
+                        'bug_vero',
+                    )
+                )
 
-        if not page.title:
+        # Title mancante solo se pagina verificata
+        if not page.title and page.content_verified:
             findings.append(
                 _finding(
                     page,
@@ -95,12 +135,14 @@ def run_rules(pages: list[PageResult]) -> list[Finding]:
                     'Aggiungere un title univoco, descrittivo e localizzato.',
                     'title vuoto o assente nel markup',
                     'Alta',
+                    'bug_vero' if page.page_verified else 'limite_copertura',
                 )
             )
         else:
             title_index[(page.site_code, page.title.strip().lower())] = title_index.get((page.site_code, page.title.strip().lower()), 0) + 1
 
-        if not page.h1:
+        # H1 mancante solo se pagina verificata
+        if not page.h1 and page.content_verified:
             findings.append(
                 _finding(
                     page,
@@ -112,6 +154,7 @@ def run_rules(pages: list[PageResult]) -> list[Finding]:
                     'Inserire un H1 unico e coerente con il tema della pagina.',
                     'h1 non rilevato',
                     'Alta',
+                    'bug_vero' if page.page_verified else 'limite_copertura',
                 )
             )
         else:
