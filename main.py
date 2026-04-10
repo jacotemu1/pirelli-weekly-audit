@@ -82,11 +82,37 @@ def main() -> int:
 
         screenshot_by_url = {p.final_url or p.url: getattr(p, 'screenshot_path', '') for p in pages}
         screenshot_by_url.update({p.url: getattr(p, 'screenshot_path', '') for p in pages})
+        page_flags_by_url = {p.final_url or p.url: {
+            'page_verified': getattr(p, 'page_verified', False),
+            'content_verified': getattr(p, 'content_verified', False),
+            'visual_verified': getattr(p, 'visual_verified', False),
+            'timeout_stage': getattr(p, 'timeout_stage', ''),
+            'error_message': getattr(p, 'error_message', ''),
+        } for p in pages}
+        page_flags_by_url.update({p.url: {
+            'page_verified': getattr(p, 'page_verified', False),
+            'content_verified': getattr(p, 'content_verified', False),
+            'visual_verified': getattr(p, 'visual_verified', False),
+            'timeout_stage': getattr(p, 'timeout_stage', ''),
+            'error_message': getattr(p, 'error_message', ''),
+        } for p in pages})
         for f in findings:
             if not getattr(f, 'screenshot_path', ''):
                 f.screenshot_path = screenshot_by_url.get(f.url, '')
             if isinstance(f.data, dict) and f.screenshot_path and not f.data.get('screenshot_path'):
                 f.data['screenshot_path'] = f.screenshot_path
+            # Associa flag di verifica dalla page
+            flags = page_flags_by_url.get(f.url, {})
+            if hasattr(f, 'page_verified'):
+                f.page_verified = flags.get('page_verified', False)
+            if hasattr(f, 'content_verified'):
+                f.content_verified = flags.get('content_verified', False)
+            if hasattr(f, 'visual_verified'):
+                f.visual_verified = flags.get('visual_verified', False)
+            if hasattr(f, 'timeout_stage'):
+                f.timeout_stage = flags.get('timeout_stage', '')
+            if hasattr(f, 'error_message'):
+                f.error_message = flags.get('error_message', '')
 
         storage.save_pages(run_id, pages)
         storage.save_findings(run_id, findings)

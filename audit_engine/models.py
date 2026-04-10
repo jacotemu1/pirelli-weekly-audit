@@ -54,6 +54,12 @@ class PageResult:
     journey: str = 'generic'
     coverage_confidence: str = 'Media'
     evidence_type: str = 'dom'
+    # Nuovi flag per gating
+    page_verified: bool = False
+    content_verified: bool = False
+    visual_verified: bool = False
+    timeout_stage: str = ''
+    error_message: str = ''
 
 
 @dataclass
@@ -86,3 +92,11 @@ class Finding:
     business_impact: str = ''
     repro_steps: str = ''
     data: dict[str, Any] = field(default_factory=dict)
+    # Nuovo campo per distinguere tipo di finding
+    finding_kind: str = 'bug_vero'
+    # Flag di verifica
+    page_verified: bool = False
+    content_verified: bool = False
+    visual_verified: bool = False
+    timeout_stage: str = ''
+    error_message: str = ''

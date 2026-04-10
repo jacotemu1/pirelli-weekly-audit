@@ -247,6 +247,19 @@ async def _fetch_page(
     template_type, journey = _classify_template(final_url, title, text[:2500], status_code)
     coverage_confidence = 'Alta' if html and not errors else 'Bassa' if errors else 'Media'
 
+    # Calcola flag di verifica
+    page_verified = status_code is not None and status_code < 400 and not any('timeout' in e.lower() or 'error' in e.lower() for e in errors)
+    content_verified = bool(html and title and h1 and text.strip())
+    visual_verified = bool(screenshot_path)
+    timeout_stage = ''
+    error_message = ''
+    if errors:
+        for error in errors:
+            if 'timeout' in error.lower():
+                timeout_stage = error.split(':')[0] if ':' in error else 'unknown'
+                break
+        error_message = '; '.join(errors)
+
     try:
         should_capture = bool(errors) or (status_code is not None and status_code >= 400)
         if should_capture:
@@ -256,8 +269,10 @@ async def _fetch_page(
             shot_file = shot_dir / f'{site.code}_{token}.png'
             await page.screenshot(path=str(shot_file), full_page=True)
             screenshot_path = str(shot_file)
+            visual_verified = True
     except Exception as exc:  # noqa: BLE001
         errors.append(f'screenshot_error: {exc}')
+        error_message = '; '.join(errors)
 
     await page.close()
     return PageResult(
@@ -285,6 +300,11 @@ async def _fetch_page(
         journey=journey,
         coverage_confidence=coverage_confidence,
         evidence_type='screenshot+dom' if screenshot_path else 'dom',
+        page_verified=page_verified,
+        content_verified=content_verified,
+        visual_verified=visual_verified,
+        timeout_stage=timeout_stage,
+        error_message=error_message,
     )
 
 
@@ -392,7 +412,7 @@ async def crawl_sites(sites: list[Site]) -> list[PageResult]:
     return results
 
 
-def _mk_finding(page: PageResult, *, category: str, severity: str, title: str, observed: str, expected: str, impact: str, steps: str, evidence: str, confidence: str = 'Media') -> Finding:
+def _mk_finding(page: PageResult, *, category: str, severity: str, title: str, observed: str, expected: str, impact: str, steps: str, evidence: str, confidence: str = 'Media', finding_kind: str = 'bug_vero') -> Finding:
     return Finding(
         site_code=page.site_code,
         country=page.country,
@@ -429,6 +449,12 @@ def _mk_finding(page: PageResult, *, category: str, severity: str, title: str, o
             'repro_steps': steps,
             'screenshot_path': page.screenshot_path,
         },
+        finding_kind=finding_kind,
+        page_verified=page.page_verified,
+        content_verified=page.content_verified,
+        visual_verified=page.visual_verified,
+        timeout_stage=page.timeout_stage,
+        error_message=page.error_message,
     )
 
 
@@ -453,6 +479,7 @@ def run_quality_audit(pages: list[PageResult]) -> list[Finding]:
                 steps=f'1) Aprire {page.final_url or page.url} 2) Verificare timeout/errori in console/network 3) Rieseguire audit.',
                 evidence='; '.join(page.errors),
                 confidence='Alta',
+                finding_kind='limite_copertura',
             ))
         if page.template_type in {'catalog_listing', 'fitment_step', 'dealer_locator'} and len(page.links) < 3:
             findings.append(_mk_finding(page, category='functional', severity='Media', title='Template funzionale con interazioni deboli', observed='Template atteso con navigazione/filtro ma pochi link/interazioni trovate.', expected='Presenza di elementi interattivi sufficienti per proseguire il journey.', impact='Rischio di funnel bloccato o incompleto.', steps='1) Aprire pagina 2) Usare filtri/CTA principali 3) Verificare che il contenuto cambi.', evidence=f'links_count={len(page.links)} template={page.template_type}'))
